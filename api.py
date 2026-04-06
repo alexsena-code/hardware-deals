@@ -940,6 +940,88 @@ def get_new_price_history(
     ]
 
 
+@app.post("/api/import-price-history/{category}")
+async def import_price_history(category: str, db: Session = Depends(get_db)):
+    """One-time import: fetch 3-month price history from PCBuildWizard API → DB."""
+    from sources.pcbuildwizard import fetch_price_history, CATEGORY_MAP
+    from models.deals import StoreProduct, StoreProductHistory
+
+    if category not in CATEGORY_MAP:
+        return {"status": "error", "message": f"Unknown category: {category}"}
+
+    points = await fetch_price_history(category, months=6, max_products=50)
+    if not points:
+        return {"status": "ok", "imported": 0, "message": "No history from API"}
+
+    # Map product names to tags (best effort)
+    products = db.execute(
+        select(StoreProduct).where(StoreProduct.category == category)
+    ).scalars().all()
+    name_to_tag = {}
+    for p in products:
+        name_to_tag[p.name.lower()] = p.tag
+        # Also match short names
+        short = p.name.split(" ")[0:3]
+        name_to_tag[" ".join(short).lower()] = p.tag
+
+    imported = 0
+    for point in points:
+        # Try to find matching tag
+        tag = None
+        pname = point.product_name.lower()
+        for key, t in name_to_tag.items():
+            if key in pname or pname in key:
+                tag = t
+                break
+        if not tag:
+            # Create a synthetic tag from name
+            tag = f"hist_{category}_{pname[:20].replace(' ', '_')}"
+
+        db.add(StoreProductHistory(
+            tag=tag,
+            cash_price=point.price,
+            merchant="PCBuildWizard (historical)",
+            recorded_at=datetime.strptime(point.date[:10], "%Y-%m-%d") if len(point.date) >= 10 else datetime.utcnow(),
+        ))
+        imported += 1
+
+    db.commit()
+
+    # Also ensure synthetic tags exist in store_products for name resolution
+    existing_tags = {p.tag for p in products}
+    for point in points:
+        pname = point.product_name.lower()
+        syn_tag = f"hist_{category}_{pname[:20].replace(' ', '_')}"
+        if syn_tag not in existing_tags:
+            existing = db.execute(
+                select(StoreProduct).where(StoreProduct.tag == syn_tag)
+            ).scalar_one_or_none()
+            if not existing:
+                db.add(StoreProduct(
+                    tag=syn_tag,
+                    name=point.product_name,
+                    manufacturer="",
+                    category=category,
+                    cash_price=point.price,
+                    merchant="PCBuildWizard",
+                ))
+    db.commit()
+
+    return {"status": "ok", "imported": imported, "category": category}
+
+
+@app.post("/api/import-all-price-history")
+async def import_all_price_history(db: Session = Depends(get_db)):
+    """Import price history for all categories from PCBuildWizard."""
+    from sources.pcbuildwizard import CATEGORY_MAP
+    results = []
+    for cat in CATEGORY_MAP.keys():
+        r = await import_price_history(cat, db)
+        results.append(r)
+    total = sum(r.get("imported", 0) for r in results)
+    return {"status": "ok", "total_imported": total, "categories": results}
+
+
 @app.post("/api/sync-new-prices")
 async def sync_new_prices(db: Session = Depends(get_db)):
     """Alias for sync-store-products (backward compat)."""
