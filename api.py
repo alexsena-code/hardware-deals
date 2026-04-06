@@ -1,16 +1,19 @@
 """FastAPI server — serves deal data to the poe-hub dashboard."""
 import asyncio
+import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, Depends, Query
+from fastapi import FastAPI, Depends, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select, func, delete
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from config_loader import config, settings
-from models.database import Base, engine, get_db
+from models.database import Base, engine, get_db, SessionLocal
 from models.deals import Deal, PriceHistory, ManualPrice, SearchItem, Proxy
 from pipeline.runner import run_scrape
 from pipeline.proxy import seed_proxies
@@ -120,6 +123,44 @@ def delete_item(item_id: int, db: Session = Depends(get_db)):
 
 
 # === Deals ===
+
+class DealUpsert(BaseModel):
+    source: str
+    external_id: str
+    item_name: str
+    title: str
+    price: float
+    url: str
+    location: str | None = None
+    image_url: str | None = None
+    description: str | None = None
+    category: str
+
+
+@app.post("/api/deals/upsert")
+def upsert_deal(body: DealUpsert, db: Session = Depends(get_db)):
+    """Upsert a deal from the remote scraper."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    stmt = pg_insert(Deal).values(
+        source=body.source,
+        external_id=body.external_id,
+        item_name=body.item_name,
+        title=body.title,
+        price=body.price,
+        url=body.url,
+        location=body.location,
+        image_url=body.image_url,
+        description=body.description,
+        category=body.category,
+        is_active=True,
+    ).on_conflict_do_update(
+        index_elements=["source", "external_id"],
+        set_={"price": body.price, "title": body.title, "is_active": True},
+    )
+    db.execute(stmt)
+    db.commit()
+    return {"status": "ok"}
+
 
 @app.get("/api/deals")
 def get_deals(
@@ -372,13 +413,118 @@ async def test_proxies(db: Session = Depends(get_db)):
     return results
 
 
+# === WebSocket Scraper Worker ===
+
+_worker_ws: WebSocket | None = None
+_worker_connected = False
+
+
+@app.websocket("/ws/scraper")
+async def scraper_ws(ws: WebSocket):
+    global _worker_ws, _worker_connected
+    await ws.accept()
+    _worker_ws = ws
+    _worker_connected = True
+    logger.info("Scraper worker connected")
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = msg.get("type")
+
+            if msg_type == "hello":
+                logger.info("Worker hello: %s", msg.get("worker"))
+
+            elif msg_type == "pong":
+                pass
+
+            elif msg_type == "deal":
+                # Save deal to DB
+                db = SessionLocal()
+                try:
+                    stmt = pg_insert(Deal).values(
+                        source=msg.get("source", "olx"),
+                        external_id=msg["external_id"],
+                        item_name=msg["item_name"],
+                        title=msg["title"],
+                        price=msg["price"],
+                        url=msg["url"],
+                        location=msg.get("location"),
+                        image_url=msg.get("image_url"),
+                        description=msg.get("description"),
+                        category=msg.get("category", "gpu"),
+                        is_active=True,
+                    ).on_conflict_do_update(
+                        index_elements=["source", "external_id"],
+                        set_={"price": msg["price"], "title": msg["title"], "is_active": True},
+                    )
+                    db.execute(stmt)
+                    db.commit()
+                finally:
+                    db.close()
+
+            elif msg_type == "status":
+                logger.info("Worker status: %s — %s", msg.get("status"), msg.get("item", ""))
+
+            elif msg_type == "result":
+                logger.info(
+                    "Scrape complete: %d deals in %ss",
+                    msg.get("total_deals", 0), msg.get("duration_s", "?"),
+                )
+
+            elif msg_type == "error":
+                logger.error("Worker error for %s: %s", msg.get("item"), msg.get("error"))
+
+    except WebSocketDisconnect:
+        logger.info("Scraper worker disconnected")
+    finally:
+        _worker_ws = None
+        _worker_connected = False
+
+
+@app.get("/api/worker/status")
+def worker_status():
+    return {"online": _worker_connected}
+
+
 # === Scrape trigger ===
 
 @app.post("/api/scrape")
-async def trigger_scrape():
-    """Manually trigger a scrape cycle."""
-    await run_scrape()
-    return {"status": "completed"}
+async def trigger_scrape(db: Session = Depends(get_db)):
+    """Trigger scrape — via WebSocket worker if connected, else local."""
+    if _worker_connected and _worker_ws:
+        # Send scrape command to worker
+        items = db.execute(
+            select(SearchItem).where(SearchItem.is_active == True)
+        ).scalars().all()
+
+        items_data = [
+            {
+                "name": i.name,
+                "keywords": i.keywords,
+                "max_price": i.max_price,
+                "category": i.category,
+                "specs": i.specs or {},
+            }
+            for i in items
+        ]
+
+        task_id = str(uuid.uuid4())[:8]
+        await _worker_ws.send_text(json.dumps({
+            "type": "scrape",
+            "id": task_id,
+            "items": items_data,
+        }))
+        return {"status": "dispatched", "worker": "websocket", "task_id": task_id, "items": len(items_data)}
+    else:
+        # Fallback: run locally (will fail on VPS due to Cloudflare)
+        await run_scrape()
+        return {"status": "completed", "worker": "local"}
 
 
 if __name__ == "__main__":
