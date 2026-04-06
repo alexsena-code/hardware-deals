@@ -155,7 +155,10 @@ def _get_total_pages(html: str) -> int:
 def _matches_item(title: str, item: SearchItem) -> bool:
     """Check if deal title is actually relevant to the item being searched."""
     title_lower = title.lower()
-    return any(kw.lower() in title_lower for kw in item.keywords)
+    matched = any(kw.lower() in title_lower for kw in item.keywords)
+    if not matched:
+        logger.debug(f"FILTERED OUT: '{title}' — no keyword match for {item.name} {item.keywords}")
+    return matched
 
 
 async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
@@ -195,7 +198,7 @@ async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
                 break
 
             for deal in deals:
-                if deal.external_id not in seen_ids:
+                if deal.external_id not in seen_ids and _matches_item(deal.title, item):
                     seen_ids.add(deal.external_id)
                     all_deals.append(deal)
 
