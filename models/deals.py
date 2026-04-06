@@ -4,6 +4,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 from models.database import Base
 
 
+class OlxCategory(Base):
+    """OLX search categories — managed via API, seeded from config."""
+    __tablename__ = "olx_categories"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    path: Mapped[str] = mapped_column(String(200), unique=True)
+    label: Mapped[str] = mapped_column(String(100))
+    is_active: Mapped[bool] = mapped_column(default=True)
+
+
 class Proxy(Base):
     """Proxy pool — managed via API, seeded from .env on first run."""
     __tablename__ = "proxies"

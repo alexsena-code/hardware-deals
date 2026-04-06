@@ -18,8 +18,25 @@ BASE_URL = "https://www.olx.com.br"
 OLX_CFG = config.sources.get("olx")
 RATE_LIMIT = OLX_CFG.rate_limit_seconds if OLX_CFG else 2.0
 MAX_PAGES = OLX_CFG.max_pages if OLX_CFG else 5
-SEARCH_PATHS = OLX_CFG.search_paths if OLX_CFG else ["/informatica"]
 MIN_PRICE = OLX_CFG.min_price if OLX_CFG else 50
+
+
+def _get_search_paths() -> list[str]:
+    """Load active OLX categories from DB, fallback to config."""
+    try:
+        from models.database import SessionLocal
+        from models.deals import OlxCategory
+        from sqlalchemy import select
+        db = SessionLocal()
+        cats = db.execute(
+            select(OlxCategory.path).where(OlxCategory.is_active == True)
+        ).scalars().all()
+        db.close()
+        if cats:
+            return list(cats)
+    except Exception:
+        pass
+    return OLX_CFG.search_paths if OLX_CFG else ["/informatica"]
 
 
 def _build_search_url(keyword: str, page: int = 1, max_price: int | None = None, path: str = "/informatica") -> str:
@@ -169,7 +186,8 @@ async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
     all_deals: list[ScrapedDeal] = []
     seen_ids: set[str] = set()
 
-    for search_path in SEARCH_PATHS:
+    search_paths = _get_search_paths()
+    for search_path in search_paths:
         for keyword in item.keywords:
             url = _build_search_url(keyword, 1, item.max_price, search_path)
             path_label = search_path or "geral"

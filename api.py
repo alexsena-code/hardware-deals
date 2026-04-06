@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from config_loader import config, settings
 from models.database import Base, engine, get_db, SessionLocal
-from models.deals import Deal, PriceHistory, ManualPrice, SearchItem, Proxy
+from models.deals import Deal, PriceHistory, ManualPrice, SearchItem, Proxy, OlxCategory
 from pipeline.runner import run_scrape
 from pipeline.proxy import seed_proxies
 
@@ -59,6 +59,75 @@ def seed_items():
         db.close()
 
     seed_proxies()
+    seed_olx_categories()
+
+
+def seed_olx_categories():
+    """Seed OLX categories from config if DB is empty."""
+    db = SessionLocal()
+    try:
+        count = db.execute(select(func.count(OlxCategory.id))).scalar()
+        if count == 0:
+            defaults = [
+                ("/informatica", "Informatica"),
+                ("/informatica/pecas-para-computador", "Pecas para Computador"),
+                ("", "Busca Geral"),
+            ]
+            for path, label in defaults:
+                db.add(OlxCategory(path=path, label=label))
+            db.commit()
+            logger.info(f"Seeded {len(defaults)} OLX categories")
+    finally:
+        db.close()
+
+
+# === OLX Categories ===
+
+@app.get("/api/olx-categories")
+def list_olx_categories(db: Session = Depends(get_db)):
+    cats = db.execute(select(OlxCategory)).scalars().all()
+    return [
+        {"id": c.id, "path": c.path, "label": c.label, "is_active": c.is_active}
+        for c in cats
+    ]
+
+
+class CategoryCreate(BaseModel):
+    path: str
+    label: str
+
+
+@app.post("/api/olx-categories")
+def add_olx_category(body: CategoryCreate, db: Session = Depends(get_db)):
+    existing = db.execute(
+        select(OlxCategory).where(OlxCategory.path == body.path)
+    ).scalar_one_or_none()
+    if existing:
+        existing.label = body.label
+        existing.is_active = True
+    else:
+        db.add(OlxCategory(path=body.path, label=body.label))
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.delete("/api/olx-categories/{cat_id}")
+def delete_olx_category(cat_id: int, db: Session = Depends(get_db)):
+    cat = db.get(OlxCategory, cat_id)
+    if cat:
+        db.delete(cat)
+        db.commit()
+    return {"status": "ok"}
+
+
+@app.patch("/api/olx-categories/{cat_id}/toggle")
+def toggle_olx_category(cat_id: int, db: Session = Depends(get_db)):
+    cat = db.get(OlxCategory, cat_id)
+    if cat:
+        cat.is_active = not cat.is_active
+        db.commit()
+        return {"status": "ok", "is_active": cat.is_active}
+    return {"status": "error"}
 
 
 # === Items (from DB) ===
