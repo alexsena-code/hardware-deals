@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    ports:
+      - "5433:5432"  # 5433 para não conflitar com o PG do path-of-trade
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: hardware_deals
+      POSTGRES_USER: hardware
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hardware123}
+    restart: unless-stopped
+
+volumes:
+  pgdata:

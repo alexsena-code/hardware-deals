@@ -1,0 +1,120 @@
+items:
+  # === GPUs (vGPU unlock) ===
+  - name: "GTX 1060 6GB"
+    keywords: ["gtx 1060 6gb", "gtx1060 6gb"]
+    max_price: 650
+    category: gpu
+    specs:
+      vram_gb: 6
+      tdp_w: 120
+      cuda_cores: 1280
+
+  - name: "GTX 1070"
+    keywords: ["gtx 1070", "gtx1070"]
+    max_price: 700
+    category: gpu
+    specs:
+      vram_gb: 8
+      tdp_w: 150
+      cuda_cores: 1920
+
+  - name: "GTX 1080 Ti"
+    keywords: ["gtx 1080 ti", "gtx 1080ti", "1080ti"]
+    max_price: 1200
+    category: gpu
+    specs:
+      vram_gb: 11
+      tdp_w: 250
+      cuda_cores: 3584
+
+  - name: "GTX 1660"
+    keywords: ["gtx 1660"]
+    max_price: 900
+    category: gpu
+    specs:
+      vram_gb: 6
+      tdp_w: 120
+      cuda_cores: 1408
+
+  - name: "RTX 2060"
+    keywords: ["rtx 2060"]
+    max_price: 1000
+    category: gpu
+    specs:
+      vram_gb: 6
+      tdp_w: 160
+      cuda_cores: 1920
+
+  - name: "RTX 2080 Ti"
+    keywords: ["rtx 2080 ti", "rtx 2080ti"]
+    max_price: 1800
+    category: gpu
+    specs:
+      vram_gb: 11
+      tdp_w: 250
+      cuda_cores: 4352
+
+  - name: "RTX 3060 12GB"
+    keywords: ["rtx 3060 12gb", "rtx 3060"]
+    max_price: 1600
+    category: gpu
+    specs:
+      vram_gb: 12
+      tdp_w: 170
+      cuda_cores: 3584
+
+  - name: "Tesla P40"
+    keywords: ["tesla p40", "nvidia p40"]
+    max_price: 3500
+    category: gpu
+    specs:
+      vram_gb: 24
+      tdp_w: 250
+      cuda_cores: 3840
+
+  # === Kits Xeon ===
+  - name: "Kit Xeon E5 2680 v4"
+    keywords: ["kit xeon e5 2680 v4", "e5 2680 v4 kit", "x99 2680"]
+    max_price: 1900
+    category: cpu-kit
+    specs:
+      cores: 14
+      threads: 28
+      base_clock_ghz: 2.4
+      boost_clock_ghz: 3.3
+
+  - name: "Kit Dual X99"
+    keywords: ["dual x99", "placa mae dual xeon", "kit dual xeon"]
+    max_price: 3000
+    category: cpu-kit
+    specs:
+      cores: 28
+      threads: 56
+      base_clock_ghz: 2.4
+
+  # === RAM ECC ===
+  - name: "DDR4 ECC 16GB"
+    keywords: ["ddr4 ecc 16gb", "memoria ecc 16gb"]
+    max_price: 150
+    category: ram
+    specs:
+      capacity_gb: 16
+      type: "DDR4 ECC"
+
+  - name: "DDR4 ECC 32GB"
+    keywords: ["ddr4 ecc 32gb", "memoria ecc 32gb"]
+    max_price: 300
+    category: ram
+    specs:
+      capacity_gb: 32
+      type: "DDR4 ECC"
+
+sources:
+  olx:
+    enabled: true
+    rate_limit_seconds: 2.0
+    max_pages: 5
+  ebay:
+    enabled: true
+    rate_limit_seconds: 1.0
+    max_pages: 3
