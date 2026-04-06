@@ -88,7 +88,7 @@ class StoreProduct(Base):
     __tablename__ = "store_products"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    tag: Mapped[str] = mapped_column(String(20), unique=True)  # PCBuildWizard product tag
+    tag: Mapped[str] = mapped_column(String(100), unique=True)  # PCBuildWizard product tag or synthetic
     name: Mapped[str] = mapped_column(String(300))
     manufacturer: Mapped[str] = mapped_column(String(100))
     category: Mapped[str] = mapped_column(String(30))
@@ -115,7 +115,7 @@ class StoreProductHistory(Base):
     __tablename__ = "store_product_history"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    tag: Mapped[str] = mapped_column(String(20))
+    tag: Mapped[str] = mapped_column(String(100))
     cash_price: Mapped[float] = mapped_column(Float)
     merchant: Mapped[str] = mapped_column(String(100))
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
