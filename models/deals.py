@@ -39,6 +39,7 @@ class SearchItem(Base):
     specs: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(default=True)
     scrape_enabled: Mapped[bool] = mapped_column(default=True)
+    base_model: Mapped[str | None] = mapped_column(String(100), nullable=True)  # For grouping with store products
 
 
 class Deal(Base):
@@ -101,12 +102,14 @@ class StoreProduct(Base):
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     free_shipping: Mapped[bool] = mapped_column(default=False)
+    base_model: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Grouping key: "RTX 4060 Ti", "Ryzen 5 7600X"
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         Index("ix_store_products_category", "category"),
         Index("ix_store_products_price", "cash_price"),
+        Index("ix_store_products_base_model", "base_model"),
     )
 
 

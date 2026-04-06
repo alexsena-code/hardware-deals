@@ -33,4 +33,13 @@ for tbl, col in [("store_products", "tag"), ("store_product_history", "tag")]:
                     conn.execute(text(f"ALTER TABLE {tbl} ALTER COLUMN {col} TYPE VARCHAR(100)"))
                     print(f"Widened {tbl}.{col} to VARCHAR(100)")
 
+# 4. Add base_model columns
+for tbl in ["store_products", "search_items"]:
+    if tbl in existing:
+        cols = {c["name"] for c in insp.get_columns(tbl)}
+        if "base_model" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN base_model VARCHAR(100)"))
+                print(f"Added base_model to {tbl}")
+
 print("Migration complete")

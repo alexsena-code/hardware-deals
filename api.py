@@ -722,6 +722,7 @@ def get_new_prices(
             "tag": p.tag,
             "details": p.details,
             "specs": p.specs or {},
+            "base_model": p.base_model,
         }
         for p in products
     ]
@@ -780,6 +781,7 @@ async def sync_store_products(db: Session = Depends(get_db)):
     Run daily via scheduler or manually."""
     from sources.pcbuildwizard import fetch_products, CATEGORY_MAP
     from models.deals import StoreProduct
+    from pipeline.model_extractor import extract_base_model
 
     total = 0
     categories_synced = []
@@ -791,6 +793,7 @@ async def sync_store_products(db: Session = Depends(get_db)):
             for p in products:
                 if not p.tag:
                     continue
+                bm = extract_base_model(p.name, category)
                 stmt = pg_insert(StoreProduct).values(
                     tag=p.tag,
                     name=p.name,
@@ -805,6 +808,7 @@ async def sync_store_products(db: Session = Depends(get_db)):
                     url=p.url,
                     rating=p.rating,
                     free_shipping=p.free_shipping,
+                    base_model=bm,
                     last_seen=datetime.utcnow(),
                 ).on_conflict_do_update(
                     index_elements=["tag"],
@@ -817,6 +821,7 @@ async def sync_store_products(db: Session = Depends(get_db)):
                         "specs": p.specs,
                         "details": p.details,
                         "free_shipping": p.free_shipping,
+                        "base_model": bm,
                         "last_seen": datetime.utcnow(),
                     },
                 )
@@ -896,6 +901,65 @@ def store_stats(db: Session = Depends(get_db)):
         }
         for r in results
     ]
+
+
+@app.get("/api/base-models/{category}")
+def list_base_models(category: str, db: Session = Depends(get_db)):
+    """List unique base models for a category with product count and price range."""
+    from models.deals import StoreProduct
+    results = db.execute(
+        select(
+            StoreProduct.base_model,
+            func.count(StoreProduct.id).label("count"),
+            func.min(StoreProduct.cash_price).label("min_price"),
+            func.max(StoreProduct.cash_price).label("max_price"),
+        )
+        .where(StoreProduct.category == category, StoreProduct.base_model.isnot(None))
+        .group_by(StoreProduct.base_model)
+        .order_by(StoreProduct.base_model)
+    ).all()
+    return [
+        {
+            "base_model": r.base_model,
+            "count": r.count,
+            "min_price": round(r.min_price, 2),
+            "max_price": round(r.max_price, 2),
+        }
+        for r in results
+    ]
+
+
+@app.put("/api/store-products/{tag}/base-model")
+def update_base_model(tag: str, base_model: str, db: Session = Depends(get_db)):
+    """Manually override the base_model for a store product."""
+    from models.deals import StoreProduct
+    product = db.execute(
+        select(StoreProduct).where(StoreProduct.tag == tag)
+    ).scalar_one_or_none()
+    if not product:
+        return {"status": "error", "message": "Product not found"}
+    product.base_model = base_model
+    db.commit()
+    return {"status": "ok", "tag": tag, "base_model": base_model}
+
+
+@app.put("/api/base-models/rename")
+def rename_base_model(
+    category: str,
+    old_name: str,
+    new_name: str,
+    db: Session = Depends(get_db),
+):
+    """Rename a base_model across all products in a category."""
+    from models.deals import StoreProduct
+    from sqlalchemy import update
+    result = db.execute(
+        update(StoreProduct)
+        .where(StoreProduct.category == category, StoreProduct.base_model == old_name)
+        .values(base_model=new_name)
+    )
+    db.commit()
+    return {"status": "ok", "updated": result.rowcount, "old": old_name, "new": new_name}
 
 
 @app.get("/api/new-prices-history/{category}")
