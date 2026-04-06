@@ -812,6 +812,129 @@ def _cache_products(products, category: str):
         db.close()
 
 
+@app.get("/api/new-price-for/{item_name}")
+async def get_new_price_for_item(item_name: str, db: Session = Depends(get_db)):
+    """Get best new price for a specific item — PCBuildWizard live, DB fallback."""
+    from sources.pcbuildwizard import find_best_new_price
+    from models.deals import StoreProduct
+
+    # Find the item config for category + keywords
+    item = db.execute(
+        select(SearchItem).where(SearchItem.name == item_name)
+    ).scalar_one_or_none()
+
+    if not item:
+        return {"item_name": item_name, "price_new": None, "source": "not_found"}
+
+    # Try PCBuildWizard live
+    try:
+        best = await find_best_new_price(item.category, item.keywords)
+        if best:
+            return {
+                "item_name": item_name,
+                "price_new": best.cash_price,
+                "product": best.name,
+                "merchant": best.merchant,
+                "source": "pcbuildwizard",
+            }
+    except Exception as e:
+        logger.warning("PCBuildWizard lookup failed for %s: %s", item_name, e)
+
+    # Fallback: manual prices
+    mp = db.execute(
+        select(ManualPrice).where(ManualPrice.item_name == item_name)
+    ).scalar_one_or_none()
+    if mp and mp.price_new:
+        return {
+            "item_name": item_name,
+            "price_new": mp.price_new,
+            "product": None,
+            "merchant": mp.notes,
+            "source": "manual_price",
+        }
+
+    # Fallback: cached store products (fuzzy match by keywords)
+    for kw in (item.keywords or []):
+        cached = db.execute(
+            select(StoreProduct)
+            .where(StoreProduct.category == item.category, StoreProduct.name.ilike(f"%{kw}%"))
+            .order_by(StoreProduct.cash_price.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if cached:
+            return {
+                "item_name": item_name,
+                "price_new": cached.cash_price,
+                "product": cached.name,
+                "merchant": cached.merchant,
+                "source": "cache",
+            }
+
+    return {"item_name": item_name, "price_new": None, "source": "none"}
+
+
+@app.get("/api/new-prices-batch")
+async def get_new_prices_batch(db: Session = Depends(get_db)):
+    """Get new prices for ALL items at once — for builder page."""
+    from sources.pcbuildwizard import fetch_products
+    from models.deals import StoreProduct
+
+    items = db.execute(
+        select(SearchItem).where(SearchItem.is_active == True)
+    ).scalars().all()
+
+    # Fetch all categories we need in parallel
+    categories_needed = list(set(i.category for i in items))
+    category_products: dict = {}
+    for cat in categories_needed:
+        try:
+            products = await fetch_products(cat, max_results=500)
+            category_products[cat] = products
+        except Exception:
+            category_products[cat] = []
+
+    results = []
+    for item in items:
+        products = category_products.get(item.category, [])
+        # Find best match
+        best = None
+        for p in products:
+            name_lower = p.name.lower()
+            if any(kw.lower() in name_lower for kw in (item.keywords or [])):
+                if best is None or p.cash_price < best.cash_price:
+                    best = p
+
+        if best:
+            results.append({
+                "item_name": item.name,
+                "price_new": best.cash_price,
+                "product": best.name,
+                "merchant": best.merchant,
+                "source": "pcbuildwizard",
+            })
+        else:
+            # Fallback: manual price
+            mp = db.execute(
+                select(ManualPrice).where(ManualPrice.item_name == item.name)
+            ).scalar_one_or_none()
+            if mp and mp.price_new:
+                results.append({
+                    "item_name": item.name,
+                    "price_new": mp.price_new,
+                    "product": None,
+                    "merchant": mp.notes,
+                    "source": "manual_price",
+                })
+            else:
+                results.append({
+                    "item_name": item.name,
+                    "price_new": None,
+                    "source": "none",
+                })
+
+    return results
+
+
 @app.get("/api/new-prices-history/{category}")
 async def get_new_price_history(
     category: str,
