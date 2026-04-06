@@ -4,6 +4,19 @@ from sqlalchemy.orm import Mapped, mapped_column
 from models.database import Base
 
 
+class Proxy(Base):
+    """Proxy pool — managed via API, seeded from .env on first run."""
+    __tablename__ = "proxies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url: Mapped[str] = mapped_column(Text, unique=True)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
 class SearchItem(Base):
     """Items to search for — managed via API, seeded from config.yaml."""
     __tablename__ = "search_items"

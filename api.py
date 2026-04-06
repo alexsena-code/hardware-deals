@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from config_loader import config, settings
 from models.database import Base, engine, get_db
-from models.deals import Deal, PriceHistory, ManualPrice, SearchItem
+from models.deals import Deal, PriceHistory, ManualPrice, SearchItem, Proxy
 from pipeline.runner import run_scrape
+from pipeline.proxy import seed_proxies
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,6 +54,8 @@ def seed_items():
             logger.info(f"Seeded {len(config.items)} items")
     finally:
         db.close()
+
+    seed_proxies()
 
 
 # === Items (from DB) ===
@@ -292,6 +295,81 @@ def delete_manual_price(item_name: str, db: Session = Depends(get_db)):
         db.delete(existing)
         db.commit()
     return {"status": "ok"}
+
+
+# === Proxies ===
+
+@app.get("/api/proxies")
+def list_proxies(db: Session = Depends(get_db)):
+    proxies = db.execute(select(Proxy)).scalars().all()
+    return [
+        {
+            "id": p.id,
+            "url": p.url,
+            "is_active": p.is_active,
+            "fail_count": p.fail_count,
+            "last_used": p.last_used.isoformat() if p.last_used else None,
+            "last_success": p.last_success.isoformat() if p.last_success else None,
+            "last_error": p.last_error,
+        }
+        for p in proxies
+    ]
+
+
+@app.post("/api/proxies")
+def add_proxy(url: str, db: Session = Depends(get_db)):
+    existing = db.execute(select(Proxy).where(Proxy.url == url)).scalar_one_or_none()
+    if existing:
+        existing.is_active = True
+        existing.fail_count = 0
+    else:
+        db.add(Proxy(url=url))
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.delete("/api/proxies/{proxy_id}")
+def delete_proxy(proxy_id: int, db: Session = Depends(get_db)):
+    proxy = db.get(Proxy, proxy_id)
+    if proxy:
+        db.delete(proxy)
+        db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/proxies/{proxy_id}/reset")
+def reset_proxy(proxy_id: int, db: Session = Depends(get_db)):
+    proxy = db.get(Proxy, proxy_id)
+    if proxy:
+        proxy.fail_count = 0
+        proxy.is_active = True
+        proxy.last_error = None
+        db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/proxies/test")
+async def test_proxies(db: Session = Depends(get_db)):
+    """Test all active proxies against OLX."""
+    import httpx
+    proxies = db.execute(select(Proxy).where(Proxy.is_active == True)).scalars().all()
+    results = []
+    for p in proxies:
+        try:
+            async with httpx.AsyncClient(proxies={"https://": p.url, "http://": p.url}, timeout=10) as client:
+                resp = await client.get("https://www.olx.com.br")
+                ok = resp.status_code == 200
+                results.append({"id": p.id, "url": p.url.split("@")[-1], "ok": ok, "status": resp.status_code})
+                if ok:
+                    p.fail_count = 0
+                    p.last_success = datetime.utcnow()
+                else:
+                    p.fail_count += 1
+        except Exception as e:
+            results.append({"id": p.id, "url": p.url.split("@")[-1], "ok": False, "error": str(e)[:100]})
+            p.fail_count += 1
+    db.commit()
+    return results
 
 
 # === Scrape trigger ===

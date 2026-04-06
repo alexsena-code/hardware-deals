@@ -1,52 +1,105 @@
+"""Proxy pool with health tracking — reads from DB, seeds from .env."""
 import random
 import logging
+from datetime import datetime
+
+from sqlalchemy import select, func
+from sqlalchemy.orm import Session
+
+from models.database import SessionLocal
+from models.deals import Proxy
 from config_loader import settings
 
 logger = logging.getLogger(__name__)
 
+MAX_FAILURES = 5
+
+
+def seed_proxies():
+    """Seed proxies from .env PROXY_LIST if DB is empty."""
+    db = SessionLocal()
+    try:
+        count = db.execute(select(func.count(Proxy.id))).scalar()
+        if count > 0:
+            return
+
+        proxy_list = [p.strip() for p in settings.proxy_list.split(",") if p.strip()]
+        if not proxy_list:
+            logger.warning("No proxies in .env and none in DB")
+            return
+
+        for url in proxy_list:
+            db.add(Proxy(url=url))
+        db.commit()
+        logger.info(f"Seeded {len(proxy_list)} proxies from .env")
+    finally:
+        db.close()
+
 
 class ProxyRotator:
     def __init__(self):
-        self._proxies = [p.strip() for p in settings.proxy_list.split(",") if p.strip()]
-        self._failed: dict[str, int] = {}  # proxy -> consecutive failures
-        self._max_failures = 3
+        self._cache: list[Proxy] = []
+        self._last_refresh = None
 
-        if self._proxies:
-            logger.info(f"Loaded {len(self._proxies)} proxies")
-        else:
-            logger.warning("No proxies configured — running without proxy")
+    def _refresh(self, db: Session):
+        """Reload active proxies from DB."""
+        self._cache = db.execute(
+            select(Proxy).where(Proxy.is_active == True, Proxy.fail_count < MAX_FAILURES)
+        ).scalars().all()
+        self._last_refresh = datetime.utcnow()
 
     def get_next(self) -> str | None:
-        if not self._proxies:
-            return None
+        """Get a random healthy proxy."""
+        db = SessionLocal()
+        try:
+            self._refresh(db)
+            if not self._cache:
+                # Try resetting failed proxies
+                all_proxies = db.execute(select(Proxy).where(Proxy.is_active == True)).scalars().all()
+                if all_proxies:
+                    for p in all_proxies:
+                        p.fail_count = 0
+                    db.commit()
+                    self._refresh(db)
 
-        # Filter out proxies with too many consecutive failures
-        available = [p for p in self._proxies if self._failed.get(p, 0) < self._max_failures]
+            if not self._cache:
+                return None
 
-        if not available:
-            # Reset all failures and try again
-            logger.warning("All proxies failed — resetting failure counts")
-            self._failed.clear()
-            available = self._proxies
+            proxy = random.choice(self._cache)
+            proxy.last_used = datetime.utcnow()
+            db.commit()
+            return proxy.url
+        finally:
+            db.close()
 
-        return random.choice(available)
+    def report_success(self, proxy_url: str):
+        db = SessionLocal()
+        try:
+            proxy = db.execute(
+                select(Proxy).where(Proxy.url == proxy_url)
+            ).scalar_one_or_none()
+            if proxy:
+                proxy.fail_count = 0
+                proxy.last_success = datetime.utcnow()
+                proxy.last_error = None
+                db.commit()
+        finally:
+            db.close()
 
-    def report_success(self, proxy: str):
-        """Reset failure count on success."""
-        if proxy in self._failed:
-            del self._failed[proxy]
-
-    def report_failure(self, proxy: str):
-        """Track consecutive failures."""
-        self._failed[proxy] = self._failed.get(proxy, 0) + 1
-        if self._failed[proxy] >= self._max_failures:
-            logger.warning(f"Proxy {proxy.split('@')[-1]} temporarily disabled ({self._max_failures} failures)")
-
-    @property
-    def available_count(self) -> int:
-        if not self._proxies:
-            return 0
-        return len([p for p in self._proxies if self._failed.get(p, 0) < self._max_failures])
+    def report_failure(self, proxy_url: str, error: str = ""):
+        db = SessionLocal()
+        try:
+            proxy = db.execute(
+                select(Proxy).where(Proxy.url == proxy_url)
+            ).scalar_one_or_none()
+            if proxy:
+                proxy.fail_count += 1
+                proxy.last_error = error[:200] if error else None
+                if proxy.fail_count >= MAX_FAILURES:
+                    logger.warning(f"Proxy {proxy_url.split('@')[-1]} disabled ({MAX_FAILURES} failures)")
+                db.commit()
+        finally:
+            db.close()
 
 
 proxy_rotator = ProxyRotator()
