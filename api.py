@@ -1086,13 +1086,13 @@ def _start_background_scheduler():
             logger.error("Store sync job error: %s", e)
 
     _bg_scheduler.add_job(snapshot_job, "interval", hours=6, id="price_snapshot")
-    _bg_scheduler.add_job(store_sync_job, "interval", hours=12, id="store_sync")
+    _bg_scheduler.add_job(store_sync_job, "cron", hour=6, minute=0, id="store_sync")
     _bg_scheduler.start()
 
     _scheduler_running = True
     _scheduler_jobs = [
         {"id": "price_snapshot", "interval": "6h", "description": "OLX price history snapshot"},
-        {"id": "store_sync", "interval": "12h", "description": "PCBuildWizard → DB full sync (all categories)"},
+        {"id": "store_sync", "interval": "daily 06:00 UTC", "description": "PCBuildWizard → DB full sync"},
     ]
     logger.info("Background scheduler started with %d jobs", len(_scheduler_jobs))
 
