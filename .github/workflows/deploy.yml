@@ -19,8 +19,9 @@ jobs:
             git pull origin main
             source .venv/bin/activate
             pip install -r requirements.txt -q
-            # Restart API
             pkill -f "python api.py" || true
+            sleep 2
+            nohup /opt/hardware-deals/.venv/bin/python /opt/hardware-deals/api.py > /opt/hardware-deals/api.log 2>&1 &
+            disown
             sleep 1
-            nohup python api.py > api.log 2>&1 &
-            echo "✅ hardware-deals deployed"
+            echo "✅ hardware-deals deployed (pid: $(pgrep -f 'python.*api.py'))"
