@@ -494,26 +494,37 @@ def worker_status():
 
 # === Scrape trigger ===
 
+class ScrapeRequest(BaseModel):
+    item_id: int | None = None
+
+
 @app.post("/api/scrape")
-async def trigger_scrape(db: Session = Depends(get_db)):
-    """Trigger scrape — via WebSocket worker if connected, else local."""
-    if _worker_connected and _worker_ws:
-        # Send scrape command to worker
-        items = db.execute(
+async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depends(get_db)):
+    """Trigger scrape — all items or a single item by ID."""
+    item_id = body.item_id if body else None
+
+    if item_id:
+        item = db.get(SearchItem, item_id)
+        if not item:
+            return {"status": "error", "message": "Item not found"}
+        items_list = [item]
+    else:
+        items_list = db.execute(
             select(SearchItem).where(SearchItem.is_active == True)
         ).scalars().all()
 
-        items_data = [
-            {
-                "name": i.name,
-                "keywords": i.keywords,
-                "max_price": i.max_price,
-                "category": i.category,
-                "specs": i.specs or {},
-            }
-            for i in items
-        ]
+    items_data = [
+        {
+            "name": i.name,
+            "keywords": i.keywords,
+            "max_price": i.max_price,
+            "category": i.category,
+            "specs": i.specs or {},
+        }
+        for i in items_list
+    ]
 
+    if _worker_connected and _worker_ws:
         task_id = str(uuid.uuid4())[:8]
         await _worker_ws.send_text(json.dumps({
             "type": "scrape",
@@ -522,7 +533,6 @@ async def trigger_scrape(db: Session = Depends(get_db)):
         }))
         return {"status": "dispatched", "worker": "websocket", "task_id": task_id, "items": len(items_data)}
     else:
-        # Fallback: run locally (will fail on VPS due to Cloudflare)
         await run_scrape()
         return {"status": "completed", "worker": "local"}
 
