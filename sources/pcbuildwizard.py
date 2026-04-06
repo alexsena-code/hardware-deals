@@ -55,12 +55,12 @@ class PriceHistoryPoint:
     category: str
 
 
-async def fetch_products(category: str, max_results: int = 50) -> list[NewPrice]:
+async def fetch_products(category: str, max_results: int = 500) -> list[NewPrice]:
     """Fetch current product listings for a category.
 
     Args:
         category: hardware-deals category (gpu, cpu, ram, etc.)
-        max_results: max products to return
+        max_results: max products to return (default 500 = effectively all)
     """
     mapping = CATEGORY_MAP.get(category)
     if not mapping:

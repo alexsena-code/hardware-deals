@@ -628,10 +628,19 @@ async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depend
 # === PCBuildWizard — New Prices ===
 
 @app.get("/api/new-prices/{category}")
-async def get_new_prices(category: str, limit: int = Query(20, le=100)):
+async def get_new_prices(
+    category: str,
+    limit: int = Query(500, le=1000),
+    search: str | None = None,
+):
     """Fetch current new prices from PCBuildWizard for a category."""
     from sources.pcbuildwizard import fetch_products
     products = await fetch_products(category, max_results=limit)
+
+    if search:
+        q = search.lower()
+        products = [p for p in products if q in p.name.lower() or q in p.manufacturer.lower()]
+
     return [
         {
             "name": p.name,
