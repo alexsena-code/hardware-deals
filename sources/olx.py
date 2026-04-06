@@ -15,17 +15,20 @@ from sources.base import ScrapedDeal, random_delay, is_junk
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.olx.com.br"
-OLX_RATE_LIMIT = config.sources.get("olx")
-RATE_LIMIT = OLX_RATE_LIMIT.rate_limit_seconds if OLX_RATE_LIMIT else 2.0
-MAX_PAGES = OLX_RATE_LIMIT.max_pages if OLX_RATE_LIMIT else 5
+OLX_CFG = config.sources.get("olx")
+RATE_LIMIT = OLX_CFG.rate_limit_seconds if OLX_CFG else 2.0
+MAX_PAGES = OLX_CFG.max_pages if OLX_CFG else 5
+SEARCH_PATHS = OLX_CFG.search_paths if OLX_CFG else ["/informatica"]
+MIN_PRICE = OLX_CFG.min_price if OLX_CFG else 50
 
 
-def _build_search_url(keyword: str, page: int = 1, max_price: int | None = None) -> str:
-    url = f"{BASE_URL}/informatica?q={quote_plus(keyword)}"
+def _build_search_url(keyword: str, page: int = 1, max_price: int | None = None, path: str = "/informatica") -> str:
+    url = f"{BASE_URL}{path}?q={quote_plus(keyword)}"
     if page > 1:
         url += f"&o={page}"
     if max_price:
         url += f"&pe={max_price}"
+    url += f"&ps={MIN_PRICE}"  # Min price to filter junk
     return url
 
 
@@ -162,47 +165,47 @@ def _matches_item(title: str, item: SearchItem) -> bool:
 
 
 async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
-    """Scrape OLX for a specific item across all keywords."""
+    """Scrape OLX for a specific item across all keywords and categories."""
     all_deals: list[ScrapedDeal] = []
     seen_ids: set[str] = set()
 
-    for keyword in item.keywords:
-        # Fetch first page to get total
-        url = _build_search_url(keyword, 1, item.max_price)
-        logger.info(f"OLX: searching '{keyword}' page 1")
-
-        html = _fetch_page(url)
-        if not html:
-            continue
-
-        total_pages = _get_total_pages(html)
-        deals = _parse_listings(html)
-
-        for deal in deals:
-            if deal.external_id not in seen_ids and _matches_item(deal.title, item):
-                seen_ids.add(deal.external_id)
-                all_deals.append(deal)
-
-        # Fetch remaining pages
-        for page in range(2, total_pages + 1):
-            await random_delay(RATE_LIMIT, RATE_LIMIT + 2)
-            url = _build_search_url(keyword, page, item.max_price)
-            logger.info(f"OLX: searching '{keyword}' page {page}")
+    for search_path in SEARCH_PATHS:
+        for keyword in item.keywords:
+            url = _build_search_url(keyword, 1, item.max_price, search_path)
+            path_label = search_path or "geral"
+            logger.info(f"OLX: searching '{keyword}' in {path_label} page 1")
 
             html = _fetch_page(url)
             if not html:
-                break
+                continue
 
+            total_pages = _get_total_pages(html)
             deals = _parse_listings(html)
-            if not deals:
-                break
 
             for deal in deals:
                 if deal.external_id not in seen_ids and _matches_item(deal.title, item):
                     seen_ids.add(deal.external_id)
                     all_deals.append(deal)
 
-        await random_delay(RATE_LIMIT, RATE_LIMIT + 1)
+            for page in range(2, total_pages + 1):
+                await random_delay(RATE_LIMIT, RATE_LIMIT + 2)
+                url = _build_search_url(keyword, page, item.max_price, search_path)
+                logger.info(f"OLX: searching '{keyword}' in {path_label} page {page}")
+
+                html = _fetch_page(url)
+                if not html:
+                    break
+
+                deals = _parse_listings(html)
+                if not deals:
+                    break
+
+                for deal in deals:
+                    if deal.external_id not in seen_ids and _matches_item(deal.title, item):
+                        seen_ids.add(deal.external_id)
+                        all_deals.append(deal)
+
+            await random_delay(RATE_LIMIT, RATE_LIMIT + 1)
 
     logger.info(f"OLX: found {len(all_deals)} deals for {item.name}")
     return all_deals

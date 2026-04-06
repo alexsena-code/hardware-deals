@@ -42,6 +42,8 @@ class SourceConfig(BaseModel):
     enabled: bool = True
     rate_limit_seconds: float = 2.0
     max_pages: int = 5
+    search_paths: list[str] = ["/informatica"]
+    min_price: int = 50
 
 
 class AppConfig(BaseModel):
