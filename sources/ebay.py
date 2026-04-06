@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from config_loader import SearchItem, config
 from pipeline.proxy import proxy_rotator
-from sources.base import ScrapedDeal, random_delay, random_ua
+from sources.base import ScrapedDeal, random_delay, random_ua, is_junk
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,9 @@ def _parse_listings(html: str) -> list[ScrapedDeal]:
             url = link_el["href"] if link_el else ""
 
             if not title or not price or not url:
+                continue
+
+            if is_junk(title, config.exclude_keywords):
                 continue
 
             # Image

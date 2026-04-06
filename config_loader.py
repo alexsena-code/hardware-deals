@@ -46,6 +46,7 @@ class SourceConfig(BaseModel):
 
 class AppConfig(BaseModel):
     items: list[SearchItem]
+    exclude_keywords: list[str] = []
     sources: dict[str, SourceConfig] = {}
 
 

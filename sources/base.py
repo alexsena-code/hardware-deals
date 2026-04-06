@@ -30,5 +30,11 @@ def random_ua() -> str:
     return random.choice(USER_AGENTS)
 
 
+def is_junk(title: str, exclude_keywords: list[str]) -> bool:
+    """Check if a listing title matches any exclusion keyword."""
+    title_lower = title.lower()
+    return any(kw in title_lower for kw in exclude_keywords)
+
+
 async def random_delay(min_s: float = 1.5, max_s: float = 4.0):
     await asyncio.sleep(random.uniform(min_s, max_s))

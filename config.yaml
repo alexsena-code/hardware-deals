@@ -109,6 +109,32 @@ items:
       capacity_gb: 32
       type: "DDR4 ECC"
 
+exclude_keywords:
+  - "caixa vazia"
+  - "caixa original"
+  - "caixa de placa"
+  - "caixa placa"
+  - "com defeito"
+  - "não funciona"
+  - "para reparo"
+  - "para peças"
+  - "com problema"
+  - "queimada"
+  - "queimado"
+  - "fan para"
+  - "cooler fan"
+  - "cooler para"
+  - "espelho para"
+  - "fonte dell"
+  - "aceito como entrada"
+  - "aceito rtx"
+  - "troco por"
+  - "troco rtx"
+  - "pc gamer"
+  - "kit gamer"
+  - "similar rtx"
+  - "desempenho da rtx"
+
 sources:
   olx:
     enabled: true

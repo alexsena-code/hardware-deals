@@ -1,5 +1,6 @@
-"""OLX Brazil scraper using curl_cffi to bypass Cloudflare."""
+"""OLX Brazil scraper — extracts ads from __NEXT_DATA__ JSON."""
 import asyncio
+import json
 import logging
 import re
 from urllib.parse import quote_plus
@@ -9,7 +10,7 @@ from curl_cffi import requests as curl_requests
 
 from config_loader import SearchItem, config
 from pipeline.proxy import proxy_rotator
-from sources.base import ScrapedDeal, random_delay, random_ua
+from sources.base import ScrapedDeal, random_delay, is_junk
 
 logger = logging.getLogger(__name__)
 
@@ -29,24 +30,16 @@ def _build_search_url(keyword: str, page: int = 1, max_price: int | None = None)
 
 
 def _parse_price(text: str) -> float | None:
-    """Extract numeric price from text like 'R$ 1.200'."""
+    """Extract numeric price from text like 'R$ 1.800'."""
     if not text:
         return None
     cleaned = re.sub(r"[^\d,.]", "", text)
     cleaned = cleaned.replace(".", "").replace(",", ".")
     try:
-        return float(cleaned)
+        val = float(cleaned)
+        return val if val > 0 else None
     except ValueError:
         return None
-
-
-def _extract_id_from_url(url: str) -> str:
-    """Extract OLX ad ID from URL."""
-    # OLX URLs end with -XXXXXXXXXX
-    match = re.search(r"-(\d{8,12})$", url.rstrip("/"))
-    if match:
-        return match.group(1)
-    return url.split("/")[-1]
 
 
 def _fetch_page(url: str) -> str | None:
@@ -66,91 +59,97 @@ def _fetch_page(url: str) -> str | None:
             },
         )
         if response.status_code == 200:
+            if proxy:
+                proxy_rotator.report_success(proxy)
             return response.text
         logger.warning(f"OLX returned {response.status_code} for {url}")
+        if proxy:
+            proxy_rotator.report_failure(proxy)
         return None
     except Exception as e:
         logger.error(f"OLX fetch error: {e}")
+        if proxy:
+            proxy_rotator.report_failure(proxy)
         return None
 
 
 def _parse_listings(html: str) -> list[ScrapedDeal]:
-    """Parse OLX search results page."""
+    """Parse OLX search results from __NEXT_DATA__ JSON."""
     soup = BeautifulSoup(html, "html.parser")
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
+
+    if not script or not script.string:
+        logger.warning("No __NEXT_DATA__ found in OLX response")
+        return []
+
+    try:
+        data = json.loads(script.string)
+    except json.JSONDecodeError:
+        logger.error("Failed to parse __NEXT_DATA__ JSON")
+        return []
+
+    ads = data.get("props", {}).get("pageProps", {}).get("ads", [])
+    if not ads:
+        return []
+
     deals = []
-
-    # Try stable data attributes first
-    cards = soup.select("a[data-lurker-detail='list_id']")
-
-    if not cards:
-        # Fallback: try data-cy attribute (OLX platform standard)
-        cards = soup.select("[data-cy='l-card']")
-
-    if not cards:
-        # Last fallback: find all ad links by URL pattern
-        cards = soup.find_all("a", href=re.compile(r"/item/"))
-
-    for card in cards:
+    for ad in ads:
         try:
-            # Extract URL
-            if card.name == "a":
-                url = card.get("href", "")
-            else:
-                link = card.find("a", href=True)
-                url = link["href"] if link else ""
+            title = ad.get("subject") or ad.get("title") or ""
+            price_str = ad.get("price") or ad.get("priceValue") or ""
+            price = _parse_price(price_str)
+            url = ad.get("url") or ad.get("friendlyUrl") or ""
+            list_id = ad.get("listId")
+            location = ad.get("location") or ""
 
-            if not url or "/item/" not in url:
-                continue
-            if not url.startswith("http"):
-                url = BASE_URL + url
-
-            # Extract title
-            title_el = card.find("h2") or card.find("h3")
-            title = title_el.get_text(strip=True) if title_el else ""
-
-            # Extract price - look for R$ pattern
-            price = None
-            for span in card.find_all("span"):
-                text = span.get_text(strip=True)
-                if "R$" in text:
-                    price = _parse_price(text)
-                    if price and price > 0:
-                        break
-
-            if not title or not price:
+            if not title or not price or not url:
                 continue
 
-            # Extract location
-            location = None
-            loc_el = card.find("span", {"data-testid": "location-date"})
-            if not loc_el:
-                # Fallback: look for location-like spans (city, state pattern)
-                for span in card.find_all("span"):
-                    text = span.get_text(strip=True)
-                    if re.search(r"[A-Z]{2}$", text) and "R$" not in text:
-                        location = text
-                        break
+            if is_junk(title, config.exclude_keywords):
+                continue
 
-            # Extract image
-            img = card.find("img")
-            image_url = img.get("src") or img.get("data-src") if img else None
-
-            external_id = _extract_id_from_url(url)
+            # First image thumbnail
+            image_url = None
+            images = ad.get("images")
+            if images and len(images) > 0:
+                img = images[0]
+                if isinstance(img, dict):
+                    image_url = img.get("original") or img.get("thumbnail")
+                elif isinstance(img, str):
+                    image_url = img
 
             deals.append(ScrapedDeal(
                 source="olx",
-                external_id=external_id,
+                external_id=str(list_id) if list_id else url.split("-")[-1],
                 title=title,
                 price=price,
                 url=url,
-                location=location,
+                location=location if location else None,
                 image_url=image_url,
             ))
         except Exception as e:
-            logger.debug(f"Failed to parse OLX card: {e}")
+            logger.debug(f"Failed to parse OLX ad: {e}")
             continue
 
     return deals
+
+
+def _get_total_pages(html: str) -> int:
+    """Extract total number of pages from __NEXT_DATA__."""
+    soup = BeautifulSoup(html, "html.parser")
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
+    if not script or not script.string:
+        return 1
+    try:
+        data = json.loads(script.string)
+        page_props = data.get("props", {}).get("pageProps", {})
+        total_ads = page_props.get("totalOfAds", 0)
+        page_size = page_props.get("pageSize", 50)
+        if total_ads and page_size:
+            return min((total_ads // page_size) + 1, MAX_PAGES)
+    except Exception:
+        pass
+    return 1
 
 
 async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
@@ -159,7 +158,25 @@ async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
     seen_ids: set[str] = set()
 
     for keyword in item.keywords:
-        for page in range(1, MAX_PAGES + 1):
+        # Fetch first page to get total
+        url = _build_search_url(keyword, 1, item.max_price)
+        logger.info(f"OLX: searching '{keyword}' page 1")
+
+        html = _fetch_page(url)
+        if not html:
+            continue
+
+        total_pages = _get_total_pages(html)
+        deals = _parse_listings(html)
+
+        for deal in deals:
+            if deal.external_id not in seen_ids:
+                seen_ids.add(deal.external_id)
+                all_deals.append(deal)
+
+        # Fetch remaining pages
+        for page in range(2, total_pages + 1):
+            await random_delay(RATE_LIMIT, RATE_LIMIT + 2)
             url = _build_search_url(keyword, page, item.max_price)
             logger.info(f"OLX: searching '{keyword}' page {page}")
 
@@ -176,7 +193,7 @@ async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
                     seen_ids.add(deal.external_id)
                     all_deals.append(deal)
 
-            await random_delay(RATE_LIMIT, RATE_LIMIT + 2)
+        await random_delay(RATE_LIMIT, RATE_LIMIT + 1)
 
     logger.info(f"OLX: found {len(all_deals)} deals for {item.name}")
     return all_deals
@@ -188,5 +205,5 @@ async def scrape_all_olx() -> dict[str, list[ScrapedDeal]]:
     for item in config.items:
         deals = await scrape_olx(item)
         results[item.name] = deals
-        await random_delay(3, 6)  # longer pause between items
+        await random_delay(3, 6)
     return results
