@@ -146,6 +146,7 @@ def list_items(db: Session = Depends(get_db)):
             "max_price": i.max_price,
             "category": i.category,
             "specs": i.specs,
+            "scrape_enabled": i.scrape_enabled,
         }
         for i in items
     ]
@@ -157,6 +158,7 @@ class ItemCreate(BaseModel):
     max_price: int
     category: str
     specs: dict = {}
+    scrape_enabled: bool = True
 
 
 @app.post("/api/items")
@@ -169,6 +171,7 @@ def create_item(body: ItemCreate, db: Session = Depends(get_db)):
         existing.max_price = body.max_price
         existing.category = body.category
         existing.specs = body.specs
+        existing.scrape_enabled = body.scrape_enabled
         existing.is_active = True
     else:
         db.add(SearchItem(
@@ -177,6 +180,7 @@ def create_item(body: ItemCreate, db: Session = Depends(get_db)):
             max_price=body.max_price,
             category=body.category,
             specs=body.specs,
+            scrape_enabled=body.scrape_enabled,
         ))
     db.commit()
     return {"status": "ok"}
@@ -192,6 +196,7 @@ def update_item(item_id: int, body: ItemCreate, db: Session = Depends(get_db)):
     item.max_price = body.max_price
     item.category = body.category
     item.specs = body.specs
+    item.scrape_enabled = body.scrape_enabled
     db.commit()
     return {"status": "ok"}
 
@@ -593,7 +598,7 @@ async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depend
         items_list = [item]
     else:
         items_list = db.execute(
-            select(SearchItem).where(SearchItem.is_active == True)
+            select(SearchItem).where(SearchItem.is_active == True, SearchItem.scrape_enabled == True)
         ).scalars().all()
 
     items_data = [

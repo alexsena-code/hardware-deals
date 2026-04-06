@@ -38,6 +38,7 @@ class SearchItem(Base):
     category: Mapped[str] = mapped_column(String(20))
     specs: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(default=True)
+    scrape_enabled: Mapped[bool] = mapped_column(default=True)
 
 
 class Deal(Base):
