@@ -168,7 +168,7 @@ def get_deals(
     source: str | None = None,
     category: str | None = None,
     max_price: float | None = None,
-    limit: int = Query(50, le=200),
+    limit: int = Query(200, le=2000),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
