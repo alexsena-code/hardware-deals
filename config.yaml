@@ -141,6 +141,6 @@ sources:
     rate_limit_seconds: 2.0
     max_pages: 5
   ebay:
-    enabled: true
+    enabled: false
     rate_limit_seconds: 1.0
     max_pages: 3

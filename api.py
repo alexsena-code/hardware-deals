@@ -189,6 +189,26 @@ def set_manual_price(
     return {"status": "ok"}
 
 
+@app.delete("/api/manual-prices/{item_name}")
+def delete_manual_price(item_name: str, db: Session = Depends(get_db)):
+    existing = db.execute(
+        select(ManualPrice).where(ManualPrice.item_name == item_name)
+    ).scalar_one_or_none()
+    if existing:
+        db.delete(existing)
+        db.commit()
+    return {"status": "ok"}
+
+
+@app.delete("/api/deals/{deal_id}")
+def delete_deal(deal_id: int, db: Session = Depends(get_db)):
+    deal = db.get(Deal, deal_id)
+    if deal:
+        db.delete(deal)
+        db.commit()
+    return {"status": "ok"}
+
+
 # === Scrape trigger ===
 
 @app.post("/api/scrape")
