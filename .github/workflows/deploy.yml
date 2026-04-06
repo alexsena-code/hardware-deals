@@ -15,13 +15,14 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            set -e
             cd /opt/hardware-deals
             git pull origin main
-            source .venv/bin/activate
-            pip install -r requirements.txt -q
-            pkill -f "python api.py" || true
+            /opt/hardware-deals/.venv/bin/pip install -r requirements.txt -q
+            cp deploy/hardware-deals.service /etc/systemd/system/ 2>/dev/null || true
+            systemctl daemon-reload
+            systemctl enable hardware-deals 2>/dev/null || true
+            systemctl restart hardware-deals
             sleep 2
-            nohup /opt/hardware-deals/.venv/bin/python /opt/hardware-deals/api.py > /opt/hardware-deals/api.log 2>&1 &
-            disown
-            sleep 1
-            echo "✅ hardware-deals deployed (pid: $(pgrep -f 'python.*api.py'))"
+            systemctl is-active hardware-deals
+            echo "✅ hardware-deals deployed"

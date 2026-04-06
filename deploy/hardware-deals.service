@@ -1,0 +1,15 @@
+[Unit]
+Description=Hardware Deals API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/hardware-deals
+ExecStart=/opt/hardware-deals/.venv/bin/python api.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
