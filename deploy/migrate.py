@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, "/opt/hardware-deals")
 
 from models.database import engine, Base
-from models.deals import StoreProduct, StoreProductHistory  # noqa: ensure models loaded
+from models.deals import StoreProduct, StoreProductHistory, BannedDeal  # noqa: ensure models loaded
 from sqlalchemy import text, inspect
 
 insp = inspect(engine)
@@ -17,7 +17,7 @@ with engine.begin() as conn:
 
 # 2. Create new tables if they don't exist (store_products, store_product_history)
 existing = insp.get_table_names()
-for table_name in ["store_products", "store_product_history"]:
+for table_name in ["store_products", "store_product_history", "banned_deals"]:
     if table_name not in existing:
         Base.metadata.tables[table_name].create(engine)
         print(f"Created table: {table_name}")

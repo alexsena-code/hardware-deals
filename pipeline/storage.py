@@ -13,7 +13,13 @@ logger = logging.getLogger(__name__)
 
 
 def upsert_deal(db: Session, deal: ScrapedDeal, item_name: str, category: str) -> bool:
-    """Insert or update a deal. Returns True if new."""
+    """Insert or update a deal. Returns True if new. Skips banned deals."""
+    from models.deals import BannedDeal
+    banned = db.execute(
+        select(BannedDeal).where(BannedDeal.source == deal.source, BannedDeal.external_id == deal.external_id)
+    ).scalar_one_or_none()
+    if banned:
+        return False
     stmt = pg_insert(Deal).values(
         source=deal.source,
         external_id=deal.external_id,

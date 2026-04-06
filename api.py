@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from config_loader import config, settings
 from models.database import Base, engine, get_db, SessionLocal
-from models.deals import Deal, PriceHistory, ManualPrice, SearchItem, Proxy, OlxCategory
+from models.deals import Deal, PriceHistory, ManualPrice, SearchItem, Proxy, OlxCategory, BannedDeal
 from pipeline.runner import run_scrape
 from pipeline.proxy import seed_proxies
 
@@ -227,7 +227,12 @@ class DealUpsert(BaseModel):
 
 @app.post("/api/deals/upsert")
 def upsert_deal(body: DealUpsert, db: Session = Depends(get_db)):
-    """Upsert a deal from the remote scraper."""
+    """Upsert a deal from the remote scraper (skips banned)."""
+    banned = db.execute(
+        select(BannedDeal).where(BannedDeal.source == body.source, BannedDeal.external_id == body.external_id)
+    ).scalar_one_or_none()
+    if banned:
+        return {"status": "skipped", "reason": "banned"}
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     stmt = pg_insert(Deal).values(
         source=body.source,
@@ -332,6 +337,55 @@ def delete_deal(deal_id: int, db: Session = Depends(get_db)):
     deal = db.get(Deal, deal_id)
     if deal:
         db.delete(deal)
+        db.commit()
+    return {"status": "ok"}
+
+
+# === Banned Deals ===
+
+@app.post("/api/deals/{deal_id}/ban")
+def ban_deal(deal_id: int, reason: str | None = None, db: Session = Depends(get_db)):
+    """Ban a deal — deletes it and prevents re-import."""
+    deal = db.get(Deal, deal_id)
+    if not deal:
+        return {"status": "error", "message": "Deal not found"}
+
+    # Add to blacklist
+    stmt = pg_insert(BannedDeal).values(
+        source=deal.source,
+        external_id=deal.external_id,
+        title=deal.title,
+        reason=reason,
+    ).on_conflict_do_nothing(index_elements=["source", "external_id"])
+    db.execute(stmt)
+
+    # Delete the deal
+    db.delete(deal)
+    db.commit()
+    return {"status": "ok", "banned": f"{deal.source}:{deal.external_id}"}
+
+
+@app.get("/api/banned-deals")
+def list_banned(db: Session = Depends(get_db)):
+    bans = db.execute(select(BannedDeal).order_by(BannedDeal.banned_at.desc())).scalars().all()
+    return [
+        {
+            "id": b.id,
+            "source": b.source,
+            "external_id": b.external_id,
+            "title": b.title,
+            "reason": b.reason,
+            "banned_at": b.banned_at.isoformat(),
+        }
+        for b in bans
+    ]
+
+
+@app.delete("/api/banned-deals/{ban_id}")
+def unban_deal(ban_id: int, db: Session = Depends(get_db)):
+    ban = db.get(BannedDeal, ban_id)
+    if ban:
+        db.delete(ban)
         db.commit()
     return {"status": "ok"}
 
@@ -532,26 +586,36 @@ async def scraper_ws(ws: WebSocket):
                 pass
 
             elif msg_type == "deal":
-                # Save deal to DB
+                # Save deal to DB (skip if banned)
                 db = SessionLocal()
                 try:
-                    stmt = pg_insert(Deal).values(
-                        source=msg.get("source", "olx"),
-                        external_id=msg["external_id"],
-                        item_name=msg["item_name"],
-                        title=msg["title"],
-                        price=msg["price"],
-                        url=msg["url"],
-                        location=msg.get("location"),
-                        image_url=msg.get("image_url"),
-                        description=msg.get("description"),
-                        category=msg.get("category", "gpu"),
-                        is_active=True,
-                    ).on_conflict_do_update(
-                        index_elements=["source", "external_id"],
-                        set_={"price": msg["price"], "title": msg["title"], "is_active": True},
-                    )
-                    db.execute(stmt)
+                    # Check blacklist
+                    banned = db.execute(
+                        select(BannedDeal).where(
+                            BannedDeal.source == msg.get("source", "olx"),
+                            BannedDeal.external_id == msg["external_id"],
+                        )
+                    ).scalar_one_or_none()
+                    if banned:
+                        logger.debug("Skipping banned deal: %s", msg["external_id"])
+                    else:
+                        stmt = pg_insert(Deal).values(
+                            source=msg.get("source", "olx"),
+                            external_id=msg["external_id"],
+                            item_name=msg["item_name"],
+                            title=msg["title"],
+                            price=msg["price"],
+                            url=msg["url"],
+                            location=msg.get("location"),
+                            image_url=msg.get("image_url"),
+                            description=msg.get("description"),
+                            category=msg.get("category", "gpu"),
+                            is_active=True,
+                        ).on_conflict_do_update(
+                            index_elements=["source", "external_id"],
+                            set_={"price": msg["price"], "title": msg["title"], "is_active": True},
+                        )
+                        db.execute(stmt)
                     db.commit()
                 finally:
                     db.close()

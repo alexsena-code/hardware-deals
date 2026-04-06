@@ -125,6 +125,22 @@ class StoreProductHistory(Base):
     )
 
 
+class BannedDeal(Base):
+    """Blacklisted deals — won't be re-imported on future crawls."""
+    __tablename__ = "banned_deals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(20))
+    external_id: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    banned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_banned_deals_lookup", "source", "external_id", unique=True),
+    )
+
+
 class ManualPrice(Base):
     """Prices filled in manually (new prices, AliExpress reference, etc)."""
     __tablename__ = "manual_prices"
