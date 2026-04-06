@@ -29,20 +29,29 @@ def parse_cpu_specs(details: str, name: str = "") -> dict:
     m = re.search(r"(\d+)-Core", details)
     if m:
         specs["cores"] = int(m.group(1))
-    # P+E cores: "(6P+8E)"
+    # P+E cores: "(6P+8E)" — Intel hybrid only
     m = re.search(r"\((\d+)P\+(\d+)E\)", details)
     if m:
         specs["p_cores"] = int(m.group(1))
         specs["e_cores"] = int(m.group(2))
-    # HT / SMT
-    if "HT" in details:
-        specs["hyperthreading"] = True
-    if "SMT" in details:
-        specs["smt"] = True
+    # HT / SMT → infer threads
+    # Match HT/SMT as standalone tokens (avoid matching inside words like "HTTPS")
+    has_ht = bool(re.search(r"\bHT\b", details))
+    has_smt = bool(re.search(r"\bSMT\b", details))
+    if has_ht or has_smt:
+        cores = specs.get("cores", 0)
+        if "p_cores" in specs and "e_cores" in specs:
+            # Intel hybrid: P-cores get HT, E-cores don't
+            specs["threads"] = specs["p_cores"] * 2 + specs["e_cores"]
+        elif cores > 0:
+            specs["threads"] = cores * 2
+    elif specs.get("cores"):
+        # No HT/SMT = threads == cores
+        specs["threads"] = specs["cores"]
     # Socket: LGA 1700, AM4, AM5, LGA 1851
     m = re.search(r"(LGA\s*\d+|AM\d+)", details)
     if m:
-        specs["socket"] = m.group(1).replace(" ", " ")
+        specs["socket"] = m.group(1)
     # PCIe
     m = re.search(r"PCIe\s+x(\d+)\s+([\d.]+)", details)
     if m:
