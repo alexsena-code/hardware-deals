@@ -145,7 +145,7 @@ sources:
       - "/informatica"           # Principal - placas de video, RAM, etc
       - "/informatica/pecas-para-computador"  # Peças avulso
       - ""                       # Busca geral (sem categoria)
-    min_price: 50                # Ignora abaixo de R$50 (lixo, caixas)
+    min_price: 400               # Ignora abaixo de R$400
   ebay:
     enabled: false
     rate_limit_seconds: 1.0
