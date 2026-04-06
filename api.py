@@ -854,10 +854,23 @@ async def sync_store_products(db: Session = Depends(get_db)):
             manual_updated += 1
     db.commit()
 
+    # Record price history snapshot for each product
+    from models.deals import StoreProduct as SP2, StoreProductHistory
+    all_products = db.execute(select(SP2)).scalars().all()
+    for p in all_products:
+        db.add(StoreProductHistory(
+            tag=p.tag,
+            cash_price=p.cash_price,
+            merchant=p.merchant,
+        ))
+    db.commit()
+    logger.info("Recorded price history for %d products", len(all_products))
+
     return {
         "status": "ok",
         "total_products": total,
         "manual_prices_updated": manual_updated,
+        "history_snapshots": len(all_products),
         "categories": categories_synced,
     }
 
@@ -886,22 +899,44 @@ def store_stats(db: Session = Depends(get_db)):
 
 
 @app.get("/api/new-prices-history/{category}")
-async def get_new_price_history(
+def get_new_price_history(
     category: str,
-    months: int = Query(6, le=12),
-    max_products: int = Query(10, le=50),
+    days: int = Query(90, le=365),
+    db: Session = Depends(get_db),
 ):
-    """Fetch price history from PCBuildWizard for a category."""
-    from sources.pcbuildwizard import fetch_price_history
-    points = await fetch_price_history(category, months, max_products)
+    """Get price history from DB (populated by daily sync)."""
+    from models.deals import StoreProduct, StoreProductHistory
+
+    since = datetime.utcnow() - timedelta(days=days)
+
+    # Get tags for this category
+    tags = db.execute(
+        select(StoreProduct.tag, StoreProduct.name)
+        .where(StoreProduct.category == category)
+    ).all()
+    tag_names = {t.tag: t.name for t in tags}
+
+    if not tag_names:
+        return []
+
+    records = db.execute(
+        select(StoreProductHistory)
+        .where(
+            StoreProductHistory.tag.in_(tag_names.keys()),
+            StoreProductHistory.recorded_at >= since,
+        )
+        .order_by(StoreProductHistory.recorded_at.asc())
+    ).scalars().all()
+
     return [
         {
-            "product_name": p.product_name,
-            "date": p.date,
-            "price": p.price,
-            "category": p.category,
+            "product_name": tag_names.get(r.tag, r.tag),
+            "date": r.recorded_at.isoformat()[:10],
+            "price": r.cash_price,
+            "merchant": r.merchant,
+            "category": category,
         }
-        for p in points
+        for r in records
     ]
 
 
