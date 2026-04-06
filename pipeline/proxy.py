@@ -50,7 +50,10 @@ class ProxyRotator:
 
     def get_next(self) -> str | None:
         """Get a random healthy proxy."""
-        db = SessionLocal()
+        try:
+            db = SessionLocal()
+        except Exception:
+            return None  # No DB available (running as remote worker)
         try:
             self._refresh(db)
             if not self._cache:
@@ -73,7 +76,10 @@ class ProxyRotator:
             db.close()
 
     def report_success(self, proxy_url: str):
-        db = SessionLocal()
+        try:
+            db = SessionLocal()
+        except Exception:
+            return
         try:
             proxy = db.execute(
                 select(Proxy).where(Proxy.url == proxy_url)
@@ -87,7 +93,10 @@ class ProxyRotator:
             db.close()
 
     def report_failure(self, proxy_url: str, error: str = ""):
-        db = SessionLocal()
+        try:
+            db = SessionLocal()
+        except Exception:
+            return
         try:
             proxy = db.execute(
                 select(Proxy).where(Proxy.url == proxy_url)
