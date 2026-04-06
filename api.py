@@ -625,6 +625,324 @@ async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depend
         return {"status": "completed", "worker": "local"}
 
 
+# === PCBuildWizard — New Prices ===
+
+@app.get("/api/new-prices/{category}")
+async def get_new_prices(category: str, limit: int = Query(20, le=100)):
+    """Fetch current new prices from PCBuildWizard for a category."""
+    from sources.pcbuildwizard import fetch_products
+    products = await fetch_products(category, max_results=limit)
+    return [
+        {
+            "name": p.name,
+            "manufacturer": p.manufacturer,
+            "cash_price": p.cash_price,
+            "installment_price": p.installment_price,
+            "merchant": p.merchant,
+            "url": p.url,
+            "category": p.category,
+            "rating": p.rating,
+            "free_shipping": p.free_shipping,
+        }
+        for p in products
+    ]
+
+
+@app.get("/api/new-prices-history/{category}")
+async def get_new_price_history(
+    category: str,
+    months: int = Query(6, le=12),
+    max_products: int = Query(10, le=50),
+):
+    """Fetch price history from PCBuildWizard for a category."""
+    from sources.pcbuildwizard import fetch_price_history
+    points = await fetch_price_history(category, months, max_products)
+    return [
+        {
+            "product_name": p.product_name,
+            "date": p.date,
+            "price": p.price,
+            "category": p.category,
+        }
+        for p in points
+    ]
+
+
+@app.post("/api/sync-new-prices")
+async def sync_new_prices(db: Session = Depends(get_db)):
+    """Sync best new prices from PCBuildWizard into ManualPrice table."""
+    from sources.pcbuildwizard import find_best_new_price
+
+    items = db.execute(
+        select(SearchItem).where(SearchItem.is_active == True)
+    ).scalars().all()
+
+    updated = []
+    for item in items:
+        best = await find_best_new_price(item.category, item.keywords)
+        if not best:
+            continue
+
+        existing = db.execute(
+            select(ManualPrice).where(ManualPrice.item_name == item.name)
+        ).scalar_one_or_none()
+
+        if existing:
+            existing.price_new = best.cash_price
+            existing.notes = f"PCBuildWizard: {best.name} @ {best.merchant}"
+        else:
+            db.add(ManualPrice(
+                item_name=item.name,
+                price_new=best.cash_price,
+                notes=f"PCBuildWizard: {best.name} @ {best.merchant}",
+            ))
+
+        updated.append({
+            "item": item.name,
+            "new_price": best.cash_price,
+            "product": best.name,
+            "merchant": best.merchant,
+        })
+
+    db.commit()
+    return {"status": "ok", "updated": len(updated), "items": updated}
+
+
+# === Analytics — Used vs New ===
+
+@app.get("/api/analytics/price-comparison")
+async def price_comparison(db: Session = Depends(get_db)):
+    """Compare used (OLX) prices vs new (PCBuildWizard/manual) for each item."""
+    # Get OLX deal stats per item
+    olx_stats = db.execute(
+        select(
+            Deal.item_name,
+            func.min(Deal.price).label("olx_min"),
+            func.avg(Deal.price).label("olx_avg"),
+            func.count(Deal.id).label("olx_count"),
+        )
+        .where(Deal.is_active == True, Deal.source == "olx")
+        .group_by(Deal.item_name)
+    ).all()
+
+    olx_map = {
+        r.item_name: {
+            "olx_min": round(r.olx_min, 2),
+            "olx_avg": round(float(r.olx_avg), 2),
+            "olx_count": r.olx_count,
+        }
+        for r in olx_stats
+    }
+
+    # Get manual/new prices
+    manual = db.execute(select(ManualPrice)).scalars().all()
+    manual_map = {
+        m.item_name: {
+            "price_new": m.price_new,
+            "price_aliexpress": m.price_aliexpress,
+            "price_reference": m.price_reference,
+            "notes": m.notes,
+        }
+        for m in manual
+    }
+
+    # Get items for max_price
+    items = db.execute(select(SearchItem).where(SearchItem.is_active == True)).scalars().all()
+
+    result = []
+    for item in items:
+        olx = olx_map.get(item.name, {})
+        new = manual_map.get(item.name, {})
+        olx_min = olx.get("olx_min")
+        price_new = new.get("price_new")
+
+        savings_pct = None
+        if olx_min and price_new and price_new > 0:
+            savings_pct = round((1 - olx_min / price_new) * 100, 1)
+
+        result.append({
+            "item_name": item.name,
+            "category": item.category,
+            "max_price": item.max_price,
+            "olx_min": olx.get("olx_min"),
+            "olx_avg": olx.get("olx_avg"),
+            "olx_count": olx.get("olx_count", 0),
+            "price_new": price_new,
+            "price_aliexpress": new.get("price_aliexpress"),
+            "savings_pct": savings_pct,
+            "notes": new.get("notes"),
+        })
+
+    return sorted(result, key=lambda x: x.get("savings_pct") or 0, reverse=True)
+
+
+@app.get("/api/analytics/price-trends")
+def price_trends(
+    days: int = Query(30, le=365),
+    db: Session = Depends(get_db),
+):
+    """Get price history trends for all items (OLX snapshots)."""
+    since = datetime.utcnow() - timedelta(days=days)
+    records = db.execute(
+        select(PriceHistory)
+        .where(PriceHistory.recorded_at >= since)
+        .order_by(PriceHistory.recorded_at.asc())
+    ).scalars().all()
+
+    # Group by item_name
+    trends: dict = {}
+    for r in records:
+        if r.item_name not in trends:
+            trends[r.item_name] = []
+        trends[r.item_name].append({
+            "date": r.recorded_at.isoformat()[:10],
+            "avg_price": round(r.avg_price, 2),
+            "min_price": round(r.min_price, 2),
+            "deal_count": r.deal_count,
+            "source": r.source,
+        })
+
+    return trends
+
+
+# === Scheduler Status ===
+
+_scheduler_running = False
+_scheduler_jobs: list[dict] = []
+
+
+@app.get("/api/scheduler/status")
+def scheduler_status():
+    return {
+        "running": _scheduler_running,
+        "jobs": _scheduler_jobs,
+    }
+
+
+@app.post("/api/scheduler/start")
+async def start_scheduler():
+    global _scheduler_running
+    if _scheduler_running:
+        return {"status": "already_running"}
+    _start_background_scheduler()
+    return {"status": "started"}
+
+
+@app.post("/api/scheduler/stop")
+async def stop_scheduler():
+    global _scheduler_running, _bg_scheduler
+    if _bg_scheduler:
+        _bg_scheduler.shutdown(wait=False)
+        _bg_scheduler = None
+    _scheduler_running = False
+    return {"status": "stopped"}
+
+
+# === Background Scheduler (integrated into API) ===
+
+_bg_scheduler = None
+
+
+def _start_background_scheduler():
+    """Start APScheduler as background jobs inside the API process."""
+    global _bg_scheduler, _scheduler_running, _scheduler_jobs
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    if _bg_scheduler:
+        return
+
+    _bg_scheduler = AsyncIOScheduler()
+
+    # Job 1: Price history snapshot every 6 hours
+    async def snapshot_job():
+        db = SessionLocal()
+        try:
+            items = db.execute(
+                select(SearchItem).where(SearchItem.is_active == True)
+            ).scalars().all()
+            for item in items:
+                record_price_snapshot_internal(db, item.name, "olx")
+            logger.info("Price snapshot complete for %d items", len(items))
+        finally:
+            db.close()
+
+    # Job 2: Sync new prices daily
+    async def sync_job():
+        from sources.pcbuildwizard import find_best_new_price
+        db = SessionLocal()
+        try:
+            items = db.execute(
+                select(SearchItem).where(SearchItem.is_active == True)
+            ).scalars().all()
+            count = 0
+            for item in items:
+                best = await find_best_new_price(item.category, item.keywords)
+                if best:
+                    existing = db.execute(
+                        select(ManualPrice).where(ManualPrice.item_name == item.name)
+                    ).scalar_one_or_none()
+                    if existing:
+                        existing.price_new = best.cash_price
+                        existing.notes = f"PCBuildWizard: {best.name} @ {best.merchant}"
+                    else:
+                        db.add(ManualPrice(
+                            item_name=item.name,
+                            price_new=best.cash_price,
+                            notes=f"PCBuildWizard: {best.name} @ {best.merchant}",
+                        ))
+                    count += 1
+            db.commit()
+            logger.info("Synced new prices for %d items", count)
+        finally:
+            db.close()
+
+    _bg_scheduler.add_job(snapshot_job, "interval", hours=6, id="price_snapshot")
+    _bg_scheduler.add_job(sync_job, "interval", hours=24, id="sync_new_prices")
+    _bg_scheduler.start()
+
+    _scheduler_running = True
+    _scheduler_jobs = [
+        {"id": "price_snapshot", "interval": "6h", "description": "OLX price history snapshot"},
+        {"id": "sync_new_prices", "interval": "24h", "description": "PCBuildWizard new price sync"},
+    ]
+    logger.info("Background scheduler started with %d jobs", len(_scheduler_jobs))
+
+
+def record_price_snapshot_internal(db, item_name: str, source: str):
+    """Record price stats (inline version for scheduler)."""
+    result = db.execute(
+        select(
+            func.avg(Deal.price),
+            func.min(Deal.price),
+            func.max(Deal.price),
+            func.count(Deal.id),
+        ).where(
+            Deal.item_name == item_name,
+            Deal.source == source,
+            Deal.is_active == True,
+        )
+    ).one()
+    avg_price, min_price, max_price, count = result
+    if count == 0:
+        return
+    db.add(PriceHistory(
+        item_name=item_name,
+        source=source,
+        avg_price=float(avg_price),
+        min_price=float(min_price),
+        max_price=float(max_price),
+        deal_count=count,
+    ))
+    db.commit()
+
+
+@app.on_event("startup")
+async def auto_start_scheduler():
+    """Auto-start scheduler on API boot."""
+    _start_background_scheduler()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host=settings.api_host, port=settings.api_port, reload=True)
