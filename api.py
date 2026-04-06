@@ -5,35 +5,115 @@ from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, func, desc
+from pydantic import BaseModel
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import Session
 
 from config_loader import config, settings
 from models.database import Base, engine, get_db
-from models.deals import Deal, PriceHistory, ManualPrice
+from models.deals import Deal, PriceHistory, ManualPrice, SearchItem
 from pipeline.runner import run_scrape
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Create tables
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Hardware Deals API", version="0.1.0")
+app = FastAPI(title="Hardware Deals API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# === Config ===
+# === Seed items from config on startup ===
+
+@app.on_event("startup")
+def seed_items():
+    """Seed search items from config.yaml if DB is empty."""
+    from models.database import SessionLocal
+    db = SessionLocal()
+    try:
+        count = db.execute(select(func.count(SearchItem.id))).scalar()
+        if count == 0:
+            logger.info("Seeding search items from config.yaml...")
+            for item in config.items:
+                db.add(SearchItem(
+                    name=item.name,
+                    keywords=item.keywords,
+                    max_price=item.max_price,
+                    category=item.category,
+                    specs=item.specs.model_dump(exclude_none=True),
+                ))
+            db.commit()
+            logger.info(f"Seeded {len(config.items)} items")
+    finally:
+        db.close()
+
+
+# === Items (from DB) ===
 
 @app.get("/api/items")
-def list_items():
-    """Return configured search items with specs."""
-    return [item.model_dump() for item in config.items]
+def list_items(db: Session = Depends(get_db)):
+    """Return search items from database."""
+    items = db.execute(
+        select(SearchItem).where(SearchItem.is_active == True)
+    ).scalars().all()
+    return [
+        {
+            "id": i.id,
+            "name": i.name,
+            "keywords": i.keywords,
+            "max_price": i.max_price,
+            "category": i.category,
+            "specs": i.specs,
+        }
+        for i in items
+    ]
+
+
+class ItemCreate(BaseModel):
+    name: str
+    keywords: list[str]
+    max_price: int
+    category: str
+    specs: dict = {}
+
+
+@app.post("/api/items")
+def create_item(body: ItemCreate, db: Session = Depends(get_db)):
+    existing = db.execute(
+        select(SearchItem).where(SearchItem.name == body.name)
+    ).scalar_one_or_none()
+    if existing:
+        existing.keywords = body.keywords
+        existing.max_price = body.max_price
+        existing.category = body.category
+        existing.specs = body.specs
+        existing.is_active = True
+    else:
+        db.add(SearchItem(
+            name=body.name,
+            keywords=body.keywords,
+            max_price=body.max_price,
+            category=body.category,
+            specs=body.specs,
+        ))
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.delete("/api/items/{item_id}")
+def delete_item(item_id: int, db: Session = Depends(get_db)):
+    item = db.get(SearchItem, item_id)
+    if item:
+        db.delete(item)
+        db.commit()
+    return {"status": "ok"}
 
 
 # === Deals ===
@@ -48,7 +128,6 @@ def get_deals(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    """Get active deals with optional filters."""
     query = select(Deal).where(Deal.is_active == True)
 
     if item_name:
@@ -82,7 +161,6 @@ def get_deals(
 
 @app.get("/api/deals/summary")
 def deals_summary(db: Session = Depends(get_db)):
-    """Price summary per item (min, avg, max, count) across all sources."""
     results = db.execute(
         select(
             Deal.item_name,
@@ -109,6 +187,23 @@ def deals_summary(db: Session = Depends(get_db)):
     ]
 
 
+@app.delete("/api/deals/all")
+def clear_all_deals(db: Session = Depends(get_db)):
+    """Clear all scraped deals."""
+    count = db.execute(delete(Deal)).rowcount
+    db.commit()
+    return {"status": "ok", "deleted": count}
+
+
+@app.delete("/api/deals/{deal_id}")
+def delete_deal(deal_id: int, db: Session = Depends(get_db)):
+    deal = db.get(Deal, deal_id)
+    if deal:
+        db.delete(deal)
+        db.commit()
+    return {"status": "ok"}
+
+
 # === Price History ===
 
 @app.get("/api/price-history/{item_name}")
@@ -117,7 +212,6 @@ def get_price_history(
     days: int = Query(30, le=365),
     db: Session = Depends(get_db),
 ):
-    """Price history for charts."""
     since = datetime.utcnow() - timedelta(days=days)
     records = db.execute(
         select(PriceHistory)
@@ -196,15 +290,6 @@ def delete_manual_price(item_name: str, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
     if existing:
         db.delete(existing)
-        db.commit()
-    return {"status": "ok"}
-
-
-@app.delete("/api/deals/{deal_id}")
-def delete_deal(deal_id: int, db: Session = Depends(get_db)):
-    deal = db.get(Deal, deal_id)
-    if deal:
-        db.delete(deal)
         db.commit()
     return {"status": "ok"}
 

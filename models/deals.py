@@ -1,7 +1,20 @@
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, DateTime, Text, Index
+from sqlalchemy import String, Integer, Float, DateTime, Text, Index, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from models.database import Base
+
+
+class SearchItem(Base):
+    """Items to search for — managed via API, seeded from config.yaml."""
+    __tablename__ = "search_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    keywords: Mapped[list] = mapped_column(JSON, default=list)
+    max_price: Mapped[int] = mapped_column(Integer)
+    category: Mapped[str] = mapped_column(String(20))
+    specs: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_active: Mapped[bool] = mapped_column(default=True)
 
 
 class Deal(Base):
