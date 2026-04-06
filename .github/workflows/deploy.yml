@@ -19,19 +19,7 @@ jobs:
             cd /opt/hardware-deals
             git pull origin main
             /opt/hardware-deals/.venv/bin/pip install -r requirements.txt -q
-            # Auto-migrate: add missing columns
-            /opt/hardware-deals/.venv/bin/python -c "
-from models.database import engine
-from sqlalchemy import text, inspect
-insp = inspect(engine)
-cols = {c['name'] for c in insp.get_columns('search_items')}
-with engine.begin() as conn:
-    if 'scrape_enabled' not in cols:
-        conn.execute(text('ALTER TABLE search_items ADD COLUMN scrape_enabled BOOLEAN DEFAULT true'))
-        print('Added scrape_enabled column')
-    else:
-        print('scrape_enabled already exists')
-" || echo "Migration skipped"
+            cd /opt/hardware-deals && .venv/bin/python deploy/migrate.py || echo "Migration skipped"
             cp deploy/hardware-deals.service /etc/systemd/system/ 2>/dev/null || true
             systemctl daemon-reload
             systemctl enable hardware-deals 2>/dev/null || true
