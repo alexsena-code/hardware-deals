@@ -279,8 +279,21 @@ def get_deals(
     query = query.order_by(Deal.price.asc()).offset(offset).limit(limit)
     deals = db.execute(query).scalars().all()
 
-    return [
-        {
+    # Load item keywords for title validation
+    items_map: dict[str, list[str]] = {}
+    all_items = db.execute(select(SearchItem)).scalars().all()
+    for item in all_items:
+        items_map[item.name] = [kw.lower() for kw in (item.keywords or [])]
+
+    results = []
+    for d in deals:
+        # Filter: title must contain at least one keyword from the matched item
+        keywords = items_map.get(d.item_name, [])
+        if keywords:
+            title_lower = d.title.lower()
+            if not any(kw in title_lower for kw in keywords):
+                continue  # Skip junk deal
+        results.append({
             "id": d.id,
             "source": d.source,
             "item_name": d.item_name,
@@ -291,13 +304,46 @@ def get_deals(
             "image_url": d.image_url,
             "category": d.category,
             "found_at": d.found_at.isoformat(),
-        }
-        for d in deals
-    ]
+        })
+
+    return results
+
+
+@app.post("/api/deals/cleanup")
+def cleanup_junk_deals(db: Session = Depends(get_db)):
+    """Remove deals whose title doesn't match any keyword of the assigned item."""
+    all_items = db.execute(select(SearchItem)).scalars().all()
+    items_map = {item.name: [kw.lower() for kw in (item.keywords or [])] for item in all_items}
+
+    deals = db.execute(select(Deal).where(Deal.is_active == True)).scalars().all()
+    removed = 0
+    for d in deals:
+        keywords = items_map.get(d.item_name, [])
+        if keywords:
+            title_lower = d.title.lower()
+            if not any(kw in title_lower for kw in keywords):
+                db.delete(d)
+                removed += 1
+    db.commit()
+    return {"status": "ok", "removed": removed, "remaining": len(deals) - removed}
 
 
 @app.get("/api/deals/summary")
 def deals_summary(db: Session = Depends(get_db)):
+    # Get valid deal IDs (title matches keywords)
+    all_items = db.execute(select(SearchItem)).scalars().all()
+    items_map = {item.name: [kw.lower() for kw in (item.keywords or [])] for item in all_items}
+    all_deals = db.execute(select(Deal).where(Deal.is_active == True)).scalars().all()
+
+    valid_ids = set()
+    for d in all_deals:
+        keywords = items_map.get(d.item_name, [])
+        if not keywords or any(kw in d.title.lower() for kw in keywords):
+            valid_ids.add(d.id)
+
+    if not valid_ids:
+        return []
+
     results = db.execute(
         select(
             Deal.item_name,
@@ -307,7 +353,7 @@ def deals_summary(db: Session = Depends(get_db)):
             func.max(Deal.price).label("max_price"),
             func.count(Deal.id).label("count"),
         )
-        .where(Deal.is_active == True)
+        .where(Deal.is_active == True, Deal.id.in_(valid_ids))
         .group_by(Deal.item_name, Deal.source)
     ).all()
 
@@ -586,9 +632,27 @@ async def scraper_ws(ws: WebSocket):
                 pass
 
             elif msg_type == "deal":
-                # Save deal to DB (skip if banned)
+                # Save deal to DB (skip if banned or title doesn't match keywords)
                 db = SessionLocal()
                 try:
+                    # Validate title matches item keywords
+                    import re as _re
+                    item_name = msg.get("item_name", "")
+                    deal_title = msg.get("title", "").lower()
+                    _item = db.execute(
+                        select(SearchItem).where(SearchItem.name == item_name)
+                    ).scalar_one_or_none()
+                    title_valid = True
+                    if _item and _item.keywords:
+                        title_valid = any(
+                            _re.search(r"(?<![a-z])" + _re.escape(kw.lower()) + r"(?![a-z])", deal_title)
+                            for kw in _item.keywords
+                        )
+                    if not title_valid:
+                        logger.debug("Skipping junk deal: '%s' for %s", msg.get("title", "")[:50], item_name)
+                        db.close()
+                        continue
+
                     # Check blacklist
                     banned = db.execute(
                         select(BannedDeal).where(

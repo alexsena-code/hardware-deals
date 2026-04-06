@@ -173,9 +173,23 @@ def _get_total_pages(html: str) -> int:
 
 
 def _matches_item(title: str, item: SearchItem) -> bool:
-    """Check if deal title is actually relevant to the item being searched."""
+    """Check if deal title is actually relevant to the item being searched.
+
+    Uses word-boundary matching to avoid false positives like
+    '1080' matching 'Monitor Full HD 1080p'.
+    """
+    import re
     title_lower = title.lower()
-    matched = any(kw.lower() in title_lower for kw in item.keywords)
+    matched = False
+    for kw in item.keywords:
+        kw_lower = kw.lower()
+        # Use word boundary: \b won't work with digits/letters boundary,
+        # so we check the keyword appears as a distinct segment
+        # e.g. "gtx 1080 ti" must appear, not just "1080" inside "1080p"
+        pattern = r"(?<![a-z])" + re.escape(kw_lower) + r"(?![a-z])"
+        if re.search(pattern, title_lower):
+            matched = True
+            break
     if not matched:
         logger.debug(f"FILTERED OUT: '{title}' — no keyword match for {item.name} {item.keywords}")
     return matched
