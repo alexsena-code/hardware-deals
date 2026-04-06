@@ -113,6 +113,20 @@ def create_item(body: ItemCreate, db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
+@app.put("/api/items/{item_id}")
+def update_item(item_id: int, body: ItemCreate, db: Session = Depends(get_db)):
+    item = db.get(SearchItem, item_id)
+    if not item:
+        return {"status": "error", "message": "Item not found"}
+    item.name = body.name
+    item.keywords = body.keywords
+    item.max_price = body.max_price
+    item.category = body.category
+    item.specs = body.specs
+    db.commit()
+    return {"status": "ok"}
+
+
 @app.delete("/api/items/{item_id}")
 def delete_item(item_id: int, db: Session = Depends(get_db)):
     item = db.get(SearchItem, item_id)
