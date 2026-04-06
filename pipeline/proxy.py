@@ -52,12 +52,8 @@ class ProxyRotator:
         """Get a random healthy proxy."""
         try:
             db = SessionLocal()
-        except Exception:
-            return None  # No DB available (running as remote worker)
-        try:
             self._refresh(db)
             if not self._cache:
-                # Try resetting failed proxies
                 all_proxies = db.execute(select(Proxy).where(Proxy.is_active == True)).scalars().all()
                 if all_proxies:
                     for p in all_proxies:
@@ -66,21 +62,20 @@ class ProxyRotator:
                     self._refresh(db)
 
             if not self._cache:
+                db.close()
                 return None
 
             proxy = random.choice(self._cache)
             proxy.last_used = datetime.utcnow()
             db.commit()
-            return proxy.url
-        finally:
             db.close()
+            return proxy.url
+        except Exception:
+            return None  # No DB available (running as remote worker)
 
     def report_success(self, proxy_url: str):
         try:
             db = SessionLocal()
-        except Exception:
-            return
-        try:
             proxy = db.execute(
                 select(Proxy).where(Proxy.url == proxy_url)
             ).scalar_one_or_none()
@@ -89,15 +84,13 @@ class ProxyRotator:
                 proxy.last_success = datetime.utcnow()
                 proxy.last_error = None
                 db.commit()
-        finally:
             db.close()
+        except Exception:
+            pass
 
     def report_failure(self, proxy_url: str, error: str = ""):
         try:
             db = SessionLocal()
-        except Exception:
-            return
-        try:
             proxy = db.execute(
                 select(Proxy).where(Proxy.url == proxy_url)
             ).scalar_one_or_none()
@@ -107,8 +100,9 @@ class ProxyRotator:
                 if proxy.fail_count >= MAX_FAILURES:
                     logger.warning(f"Proxy {proxy_url.split('@')[-1]} disabled ({MAX_FAILURES} failures)")
                 db.commit()
-        finally:
             db.close()
+        except Exception:
+            pass
 
 
 proxy_rotator = ProxyRotator()
