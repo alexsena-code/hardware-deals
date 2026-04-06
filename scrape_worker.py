@@ -54,6 +54,7 @@ async def _execute_scrape(ws, msg):
     """Execute a scrape task and send results back."""
     task_id = msg.get("id", "unknown")
     items_data = msg.get("items", [])
+    search_paths = msg.get("search_paths")  # OLX categories from server DB
 
     if not items_data:
         log.warning("No items to scrape")
@@ -82,7 +83,7 @@ async def _execute_scrape(ws, msg):
         }))
 
         try:
-            deals = await scrape_olx(item)
+            deals = await scrape_olx(item, search_paths=search_paths)
             log.info("%s: %d deals found", item.name, len(deals))
 
             # Send deals in batches

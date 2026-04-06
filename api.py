@@ -605,6 +605,14 @@ async def test_proxies(db: Session = Depends(get_db)):
 
 _worker_ws: WebSocket | None = None
 _worker_connected = False
+_scrape_logs: list[dict] = []  # Recent scrape activity log (max 200)
+
+
+def _add_scrape_log(event: str, **kwargs):
+    entry = {"event": event, "time": datetime.utcnow().isoformat()[:19], **kwargs}
+    _scrape_logs.append(entry)
+    if len(_scrape_logs) > 200:
+        _scrape_logs.pop(0)
 
 
 @app.websocket("/ws/scraper")
@@ -627,6 +635,7 @@ async def scraper_ws(ws: WebSocket):
 
             if msg_type == "hello":
                 logger.info("Worker hello: %s", msg.get("worker"))
+                _add_scrape_log("worker_connected", worker=msg.get("worker"))
 
             elif msg_type == "pong":
                 pass
@@ -650,6 +659,7 @@ async def scraper_ws(ws: WebSocket):
                         )
                     if not title_valid:
                         logger.debug("Skipping junk deal: '%s' for %s", msg.get("title", "")[:50], item_name)
+                        _add_scrape_log("filtered", item=item_name, title=msg.get("title", "")[:60], reason="keyword_mismatch")
                         db.close()
                         continue
 
@@ -686,18 +696,22 @@ async def scraper_ws(ws: WebSocket):
 
             elif msg_type == "status":
                 logger.info("Worker status: %s — %s", msg.get("status"), msg.get("item", ""))
+                _add_scrape_log("scraping", item=msg.get("item"), status=msg.get("status"))
 
             elif msg_type == "result":
                 logger.info(
                     "Scrape complete: %d deals in %ss",
                     msg.get("total_deals", 0), msg.get("duration_s", "?"),
                 )
+                _add_scrape_log("complete", total_deals=msg.get("total_deals", 0), duration_s=msg.get("duration_s"))
 
             elif msg_type == "error":
                 logger.error("Worker error for %s: %s", msg.get("item"), msg.get("error"))
+                _add_scrape_log("error", item=msg.get("item"), error=msg.get("error", "")[:100])
 
     except WebSocketDisconnect:
         logger.info("Scraper worker disconnected")
+        _add_scrape_log("worker_disconnected")
     finally:
         _worker_ws = None
         _worker_connected = False
@@ -706,6 +720,12 @@ async def scraper_ws(ws: WebSocket):
 @app.get("/api/worker/status")
 def worker_status():
     return {"online": _worker_connected}
+
+
+@app.get("/api/scrape-logs")
+def get_scrape_logs(limit: int = Query(50, le=200)):
+    """Recent scrape activity logs."""
+    return _scrape_logs[-limit:]
 
 
 # === Scrape trigger ===
@@ -742,12 +762,22 @@ async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depend
 
     if _worker_connected and _worker_ws:
         task_id = str(uuid.uuid4())[:8]
+        # Send OLX categories from DB so worker uses them
+        from models.deals import OlxCategory
+        olx_cats = db.execute(
+            select(OlxCategory.path).where(OlxCategory.is_active == True)
+        ).scalars().all()
+        search_paths = list(olx_cats) if olx_cats else ["/informatica", "/informatica/pecas-para-computador", ""]
+
+        _add_scrape_log("dispatched", task_id=task_id, items=len(items_data), categories=len(search_paths))
+
         await _worker_ws.send_text(json.dumps({
             "type": "scrape",
             "id": task_id,
             "items": items_data,
+            "search_paths": search_paths,
         }))
-        return {"status": "dispatched", "worker": "websocket", "task_id": task_id, "items": len(items_data)}
+        return {"status": "dispatched", "worker": "websocket", "task_id": task_id, "items": len(items_data), "categories": search_paths}
     else:
         await run_scrape()
         return {"status": "completed", "worker": "local"}

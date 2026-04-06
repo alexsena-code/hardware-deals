@@ -195,12 +195,13 @@ def _matches_item(title: str, item: SearchItem) -> bool:
     return matched
 
 
-async def scrape_olx(item: SearchItem) -> list[ScrapedDeal]:
+async def scrape_olx(item: SearchItem, search_paths: list[str] | None = None) -> list[ScrapedDeal]:
     """Scrape OLX for a specific item across all keywords and categories."""
     all_deals: list[ScrapedDeal] = []
     seen_ids: set[str] = set()
 
-    search_paths = _get_search_paths()
+    if search_paths is None:
+        search_paths = _get_search_paths()
     for search_path in search_paths:
         for keyword in item.keywords:
             url = _build_search_url(keyword, 1, item.max_price, search_path)
