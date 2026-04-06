@@ -1,8 +1,10 @@
 """PCBuildWizard API — fetches new hardware prices from Brazilian stores."""
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
+
+from pipeline.spec_parser import parse_specs
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,9 @@ class NewPrice:
     condition: str | None = None
     free_shipping: bool = False
     part_number: str | None = None
+    tag: str | None = None
+    details: str | None = None
+    specs: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -89,8 +94,12 @@ async def fetch_products(category: str, max_results: int = 500) -> list[NewPrice
             if not cash_price or cash_price <= 0:
                 continue
 
+            name = item.get("name") or item.get("shortDescription") or "Unknown"
+            details = item.get("details") or ""
+            parsed_specs = parse_specs(category, details, name)
+
             products.append(NewPrice(
-                name=item.get("name") or item.get("shortDescription") or "Unknown",
+                name=name,
                 manufacturer=item.get("manufacturer") or "",
                 cash_price=float(cash_price),
                 installment_price=float(ip) if (ip := item.get("installmentPrice")) else None,
@@ -101,6 +110,9 @@ async def fetch_products(category: str, max_results: int = 500) -> list[NewPrice
                 condition=item.get("condition"),
                 free_shipping=bool(item.get("freeShippingElegible")),
                 part_number=item.get("partNumber"),
+                tag=item.get("tag"),
+                details=details,
+                specs=parsed_specs,
             ))
         except Exception as e:
             logger.debug("Failed to parse PCBuildWizard product: %s", e)

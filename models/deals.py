@@ -83,6 +83,48 @@ class PriceHistory(Base):
     )
 
 
+class StoreProduct(Base):
+    """Cached product listings from PCBuildWizard — fallback + specs + history."""
+    __tablename__ = "store_products"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tag: Mapped[str] = mapped_column(String(20), unique=True)  # PCBuildWizard product tag
+    name: Mapped[str] = mapped_column(String(300))
+    manufacturer: Mapped[str] = mapped_column(String(100))
+    category: Mapped[str] = mapped_column(String(30))
+    details: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    part_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    specs: Mapped[dict] = mapped_column(JSON, default=dict)  # Parsed specs from details
+    cash_price: Mapped[float] = mapped_column(Float)
+    installment_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    merchant: Mapped[str] = mapped_column(String(100))
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    free_shipping: Mapped[bool] = mapped_column(default=False)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_store_products_category", "category"),
+        Index("ix_store_products_price", "cash_price"),
+    )
+
+
+class StoreProductHistory(Base):
+    """Price history snapshots for store products."""
+    __tablename__ = "store_product_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tag: Mapped[str] = mapped_column(String(20))
+    cash_price: Mapped[float] = mapped_column(Float)
+    merchant: Mapped[str] = mapped_column(String(100))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_store_history_tag", "tag", "recorded_at"),
+    )
+
+
 class ManualPrice(Base):
     """Prices filled in manually (new prices, AliExpress reference, etc)."""
     __tablename__ = "manual_prices"

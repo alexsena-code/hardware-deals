@@ -632,6 +632,20 @@ async def get_new_prices(
     category: str,
     limit: int = Query(500, le=1000),
     search: str | None = None,
+    # Spec filters (min values)
+    min_vram: int | None = None,
+    max_vram: int | None = None,
+    min_capacity: int | None = None,
+    max_capacity: int | None = None,
+    min_wattage: int | None = None,
+    min_refresh: int | None = None,
+    min_size: float | None = None,
+    max_size: float | None = None,
+    socket: str | None = None,
+    memory_type: str | None = None,
+    form_factor: str | None = None,
+    panel: str | None = None,
+    resolution: str | None = None,
 ):
     """Fetch current new prices from PCBuildWizard for a category."""
     from sources.pcbuildwizard import fetch_products
@@ -640,6 +654,31 @@ async def get_new_prices(
     if search:
         q = search.lower()
         products = [p for p in products if q in p.name.lower() or q in p.manufacturer.lower()]
+
+    # Spec-based filters
+    def matches(p) -> bool:
+        s = p.specs
+        if min_vram and s.get("vram_gb", 0) < min_vram: return False
+        if max_vram and s.get("vram_gb", 999) > max_vram: return False
+        if min_capacity and s.get("capacity_gb", 0) < min_capacity: return False
+        if max_capacity and s.get("capacity_gb", 99999) > max_capacity: return False
+        if min_wattage and s.get("wattage", 0) < min_wattage: return False
+        if min_refresh and s.get("refresh_rate", 0) < min_refresh: return False
+        if min_size and s.get("size_inches", 0) < min_size: return False
+        if max_size and s.get("size_inches", 999) > max_size: return False
+        if socket and s.get("socket", "").replace(" ", "") != socket.replace(" ", ""): return False
+        if memory_type and s.get("memory_type", "") != memory_type and s.get("type", "") != memory_type: return False
+        if form_factor and s.get("form_factor", "") != form_factor: return False
+        if panel and s.get("panel", "") != panel: return False
+        if resolution and s.get("resolution", "") != resolution: return False
+        return True
+
+    if any([min_vram, max_vram, min_capacity, max_capacity, min_wattage,
+            min_refresh, min_size, max_size, socket, memory_type, form_factor, panel, resolution]):
+        products = [p for p in products if matches(p)]
+
+    # Cache to DB
+    _cache_products(products, category)
 
     return [
         {
@@ -652,9 +691,61 @@ async def get_new_prices(
             "category": p.category,
             "rating": p.rating,
             "free_shipping": p.free_shipping,
+            "tag": p.tag,
+            "details": p.details,
+            "specs": p.specs,
         }
         for p in products
     ]
+
+
+def _cache_products(products, category: str):
+    """Cache products to DB for fallback and history."""
+    from models.deals import StoreProduct, StoreProductHistory
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    if not products:
+        return
+    db = SessionLocal()
+    try:
+        for p in products:
+            if not p.tag:
+                continue
+            # Upsert product
+            stmt = pg_insert(StoreProduct).values(
+                tag=p.tag,
+                name=p.name,
+                manufacturer=p.manufacturer,
+                category=category,
+                details=p.details,
+                part_number=p.part_number,
+                specs=p.specs,
+                cash_price=p.cash_price,
+                installment_price=p.installment_price,
+                merchant=p.merchant,
+                url=p.url,
+                rating=p.rating,
+                free_shipping=p.free_shipping,
+                last_seen=datetime.utcnow(),
+            ).on_conflict_do_update(
+                index_elements=["tag"],
+                set_={
+                    "cash_price": p.cash_price,
+                    "installment_price": p.installment_price,
+                    "merchant": p.merchant,
+                    "url": p.url,
+                    "rating": p.rating,
+                    "specs": p.specs,
+                    "last_seen": datetime.utcnow(),
+                },
+            )
+            db.execute(stmt)
+        db.commit()
+    except Exception as e:
+        logger.warning("Failed to cache products: %s", e)
+        db.rollback()
+    finally:
+        db.close()
 
 
 @app.get("/api/new-prices-history/{category}")
