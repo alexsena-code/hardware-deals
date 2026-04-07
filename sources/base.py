@@ -23,7 +23,12 @@ class ScrapedDeal:
     url: str
     location: str | None = None
     image_url: str | None = None
+    image_urls: list = None  # type: ignore
     description: str | None = None
+
+    def __post_init__(self):
+        if self.image_urls is None:
+            self.image_urls = []
 
 
 def random_ua() -> str:

@@ -302,6 +302,7 @@ def get_deals(
             "url": d.url,
             "location": d.location,
             "image_url": d.image_url,
+            "image_urls": d.image_urls or [],
             "category": d.category,
             "found_at": d.found_at.isoformat(),
         })
@@ -722,6 +723,7 @@ async def scraper_ws(ws: WebSocket):
                             url=msg["url"],
                             location=msg.get("location"),
                             image_url=msg.get("image_url"),
+                            image_urls=msg.get("image_urls", []),
                             description=msg.get("description"),
                             category=msg.get("category", "gpu"),
                             is_active=True,

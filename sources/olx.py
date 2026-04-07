@@ -128,15 +128,18 @@ def _parse_listings(html: str) -> list[ScrapedDeal]:
             if is_junk(title, config.exclude_keywords):
                 continue
 
-            # First image thumbnail
-            image_url = None
+            # All image URLs
+            image_urls: list[str] = []
             images = ad.get("images")
-            if images and len(images) > 0:
-                img = images[0]
-                if isinstance(img, dict):
-                    image_url = img.get("original") or img.get("thumbnail")
-                elif isinstance(img, str):
-                    image_url = img
+            if images:
+                for img in images:
+                    url_img = None
+                    if isinstance(img, dict):
+                        url_img = img.get("original") or img.get("thumbnail")
+                    elif isinstance(img, str):
+                        url_img = img
+                    if url_img:
+                        image_urls.append(url_img)
 
             deals.append(ScrapedDeal(
                 source="olx",
@@ -145,7 +148,8 @@ def _parse_listings(html: str) -> list[ScrapedDeal]:
                 price=price,
                 url=url,
                 location=location if location else None,
-                image_url=image_url,
+                image_url=image_urls[0] if image_urls else None,
+                image_urls=image_urls,
             ))
         except Exception as e:
             logger.debug(f"Failed to parse OLX ad: {e}")

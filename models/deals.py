@@ -54,6 +54,7 @@ class Deal(Base):
     url: Mapped[str] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(String(200), nullable=True)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_urls: Mapped[list] = mapped_column(JSON, default=list)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str] = mapped_column(String(20))  # gpu, cpu-kit, ram
     found_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

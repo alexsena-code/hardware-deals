@@ -99,6 +99,7 @@ async def _execute_scrape(ws, msg):
                     "url": deal.url,
                     "location": deal.location,
                     "image_url": deal.image_url,
+                    "image_urls": deal.image_urls or [],
                     "description": deal.description,
                     "category": item.category,
                 }))

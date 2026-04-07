@@ -42,4 +42,12 @@ for tbl in ["store_products", "search_items"]:
                 conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN base_model VARCHAR(100)"))
                 print(f"Added base_model to {tbl}")
 
+# 5. Add image_urls JSON column to deals
+if "deals" in existing:
+    cols = {c["name"] for c in insp.get_columns("deals")}
+    if "image_urls" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE deals ADD COLUMN image_urls JSON DEFAULT '[]'::json"))
+            print("Added image_urls to deals")
+
 print("Migration complete")
