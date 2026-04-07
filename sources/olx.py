@@ -252,7 +252,7 @@ async def scrape_olx(item: SearchItem, search_paths: list[str] | None = None) ->
                     all_deals.append(deal)
 
             for page in range(2, total_pages + 1):
-                await random_delay(RATE_LIMIT, RATE_LIMIT + 2)
+                await random_delay(RATE_LIMIT * 2, RATE_LIMIT * 4)
                 url = _build_search_url(keyword, page, item.max_price, search_path)
                 logger.info(f"OLX: searching '{keyword}' in {path_label} page {page}")
 
@@ -269,7 +269,7 @@ async def scrape_olx(item: SearchItem, search_paths: list[str] | None = None) ->
                         seen_ids.add(deal.external_id)
                         all_deals.append(deal)
 
-            await random_delay(RATE_LIMIT, RATE_LIMIT + 1)
+            await random_delay(RATE_LIMIT * 2, RATE_LIMIT * 3)
 
     logger.info(f"OLX: found {len(all_deals)} deals for {item.name}")
     return all_deals

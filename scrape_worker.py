@@ -50,11 +50,64 @@ def _setup_signals():
         signal.signal(signal.SIGINT, lambda *_: shutdown_event.set())
 
 
+CONCURRENCY = 3  # parallel scrape tasks
+
+
+async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths):
+    """Scrape a single item with concurrency limit."""
+    async with sem:
+        item = SearchItem(
+            name=item_data["name"],
+            keywords=item_data["keywords"],
+            max_price=item_data["max_price"],
+            category=item_data["category"],
+            specs=item_data.get("specs", {}),
+        )
+
+        async with ws_lock:
+            await ws.send(json.dumps({
+                "type": "status", "id": task_id,
+                "status": "scraping", "item": item.name,
+            }))
+
+        count = 0
+        try:
+            deals = await scrape_olx(item, search_paths=search_paths)
+            log.info("%s: %d deals found", item.name, len(deals))
+
+            for deal in deals:
+                async with ws_lock:
+                    await ws.send(json.dumps({
+                        "type": "deal",
+                        "id": task_id,
+                        "source": deal.source,
+                        "external_id": deal.external_id,
+                        "item_name": item.name,
+                        "title": deal.title,
+                        "price": deal.price,
+                        "url": deal.url,
+                        "location": deal.location,
+                        "image_url": deal.image_url,
+                        "image_urls": deal.image_urls or [],
+                        "description": deal.description,
+                        "category": item.category,
+                    }))
+                count += 1
+        except Exception as e:
+            log.error("Scrape failed for %s: %s", item.name, e)
+            async with ws_lock:
+                await ws.send(json.dumps({
+                    "type": "error", "id": task_id,
+                    "item": item.name, "error": str(e),
+                }))
+        return count
+
+
 async def _execute_scrape(ws, msg):
-    """Execute a scrape task and send results back."""
+    """Execute a scrape task with parallel workers."""
     task_id = msg.get("id", "unknown")
     items_data = msg.get("items", [])
-    search_paths = msg.get("search_paths")  # OLX categories from server DB
+    search_paths = msg.get("search_paths")
 
     if not items_data:
         log.warning("No items to scrape")
@@ -64,53 +117,17 @@ async def _execute_scrape(ws, msg):
         }))
         return
 
-    log.info("Task %s: scraping %d items", task_id, len(items_data))
+    log.info("Task %s: scraping %d items with %d parallel workers", task_id, len(items_data), CONCURRENCY)
     t0 = time.monotonic()
-    total_deals = 0
 
-    for item_data in items_data:
-        item = SearchItem(
-            name=item_data["name"],
-            keywords=item_data["keywords"],
-            max_price=item_data["max_price"],
-            category=item_data["category"],
-            specs=item_data.get("specs", {}),
-        )
+    sem = asyncio.Semaphore(CONCURRENCY)
+    ws_lock = asyncio.Lock()
 
-        await ws.send(json.dumps({
-            "type": "status", "id": task_id,
-            "status": "scraping", "item": item.name,
-        }))
-
-        try:
-            deals = await scrape_olx(item, search_paths=search_paths)
-            log.info("%s: %d deals found", item.name, len(deals))
-
-            # Send deals in batches
-            for deal in deals:
-                await ws.send(json.dumps({
-                    "type": "deal",
-                    "id": task_id,
-                    "source": deal.source,
-                    "external_id": deal.external_id,
-                    "item_name": item.name,
-                    "title": deal.title,
-                    "price": deal.price,
-                    "url": deal.url,
-                    "location": deal.location,
-                    "image_url": deal.image_url,
-                    "image_urls": deal.image_urls or [],
-                    "description": deal.description,
-                    "category": item.category,
-                }))
-                total_deals += 1
-
-        except Exception as e:
-            log.error("Scrape failed for %s: %s", item.name, e)
-            await ws.send(json.dumps({
-                "type": "error", "id": task_id,
-                "item": item.name, "error": str(e),
-            }))
+    counts = await asyncio.gather(*[
+        _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths)
+        for item_data in items_data
+    ])
+    total_deals = sum(counts)
 
     duration = round(time.monotonic() - t0, 1)
     log.info("Task %s done: %d deals in %.1fs", task_id, total_deals, duration)
