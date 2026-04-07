@@ -309,21 +309,45 @@ def get_deals(
     return results
 
 
+def _title_matches_keywords(title: str, keywords: list[str]) -> bool:
+    """Same matching logic as the OLX scraper."""
+    import re as _re
+    if not keywords:
+        return True
+    tl = title.lower()
+    tn = _re.sub(r"([a-z])(\d)", r"\1 \2", tl)
+    tn = _re.sub(r"(\d)([a-z])", r"\1 \2", tn)
+    tn = _re.sub(r"[^a-z0-9]+", " ", tn).strip()
+    traps = ["fullhd", "1920x1080", "1366x768", "lcd", "monitor", "tela", "notebook", "portatil", "portátil"]
+    title_for_trap = tl.replace(" ", "")
+    has_res = any(t in title_for_trap for t in traps)
+    for kw in keywords:
+        kl = kw.lower().strip()
+        kn = _re.sub(r"([a-z])(\d)", r"\1 \2", kl)
+        kn = _re.sub(r"(\d)([a-z])", r"\1 \2", kn)
+        kn = _re.sub(r"[^a-z0-9]+", " ", kn).strip()
+        if not kn:
+            continue
+        if _re.search(r"\b" + _re.escape(kn) + r"\b", tn):
+            if has_res and kn.strip() in ("1080", "1080p", "1080 p"):
+                continue
+            return True
+    return False
+
+
 @app.post("/api/deals/cleanup")
 def cleanup_junk_deals(db: Session = Depends(get_db)):
     """Remove deals whose title doesn't match any keyword of the assigned item."""
     all_items = db.execute(select(SearchItem)).scalars().all()
-    items_map = {item.name: [kw.lower() for kw in (item.keywords or [])] for item in all_items}
+    items_map = {item.name: list(item.keywords or []) for item in all_items}
 
     deals = db.execute(select(Deal).where(Deal.is_active == True)).scalars().all()
     removed = 0
     for d in deals:
         keywords = items_map.get(d.item_name, [])
-        if keywords:
-            title_lower = d.title.lower()
-            if not any(kw in title_lower for kw in keywords):
-                db.delete(d)
-                removed += 1
+        if keywords and not _title_matches_keywords(d.title, keywords):
+            db.delete(d)
+            removed += 1
     db.commit()
     return {"status": "ok", "removed": removed, "remaining": len(deals) - removed}
 
