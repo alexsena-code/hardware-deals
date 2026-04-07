@@ -173,23 +173,50 @@ def _get_total_pages(html: str) -> int:
 
 
 def _matches_item(title: str, item: SearchItem) -> bool:
-    """Check if deal title is actually relevant to the item being searched.
+    """Check if deal title is relevant to the item.
 
-    Uses word-boundary matching to avoid false positives like
-    '1080' matching 'Monitor Full HD 1080p'.
+    Strategy:
+    1. Normalize: lowercase + collapse non-alphanumeric to single space
+       "Rtx 2080-Ti" -> "rtx 2080 ti", "Rtx2080Ti" -> "rtx2080ti"
+    2. Match keyword with digit-aware word boundaries
+       (digit-letter boundary IS a boundary for our purposes)
+    3. Reject false positives: "1080" preceded by FullHD-like context
     """
     import re
+
+    # Normalize: lowercase, replace special chars with space
     title_lower = title.lower()
+    # Insert spaces between letter-digit transitions: rtx2080ti -> rtx 2080 ti
+    title_norm = re.sub(r"([a-z])(\d)", r"\1 \2", title_lower)
+    title_norm = re.sub(r"(\d)([a-z])", r"\1 \2", title_norm)
+    # Collapse non-alphanumeric to space
+    title_norm = re.sub(r"[^a-z0-9]+", " ", title_norm).strip()
+
+    # Reject obvious false positives for resolution numbers
+    resolution_traps = ["full hd", "1920x1080", "1920 x 1080", "1366x768", "lcd", "monitor", "tela", "notebook"]
+    title_for_trap = title_lower.replace(" ", "")
+    has_resolution_context = any(t.replace(" ", "") in title_for_trap for t in resolution_traps)
+
     matched = False
     for kw in item.keywords:
-        kw_lower = kw.lower()
-        # Use word boundary: \b won't work with digits/letters boundary,
-        # so we check the keyword appears as a distinct segment
-        # e.g. "gtx 1080 ti" must appear, not just "1080" inside "1080p"
-        pattern = r"(?<![a-z])" + re.escape(kw_lower) + r"(?![a-z])"
-        if re.search(pattern, title_lower):
+        kw_lower = kw.lower().strip()
+        # Normalize the keyword the same way
+        kw_norm = re.sub(r"([a-z])(\d)", r"\1 \2", kw_lower)
+        kw_norm = re.sub(r"(\d)([a-z])", r"\1 \2", kw_norm)
+        kw_norm = re.sub(r"[^a-z0-9]+", " ", kw_norm).strip()
+        if not kw_norm:
+            continue
+
+        # Word-boundary match on normalized strings (now space-separated tokens)
+        pattern = r"\b" + re.escape(kw_norm) + r"\b"
+        if re.search(pattern, title_norm):
+            # Reject if it's likely a resolution false positive
+            # (e.g. keyword "1080" matching in "Full HD 1080")
+            if has_resolution_context and kw_norm.strip() in ("1080", "1080p", "1366", "768"):
+                continue
             matched = True
             break
+
     if not matched:
         logger.debug(f"FILTERED OUT: '{title}' — no keyword match for {item.name} {item.keywords}")
     return matched

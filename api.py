@@ -261,7 +261,7 @@ def get_deals(
     source: str | None = None,
     category: str | None = None,
     max_price: float | None = None,
-    limit: int = Query(200, le=2000),
+    limit: int = Query(5000, le=10000),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
@@ -644,19 +644,35 @@ async def scraper_ws(ws: WebSocket):
                 # Save deal to DB (skip if banned or title doesn't match keywords)
                 db = SessionLocal()
                 try:
-                    # Validate title matches item keywords
+                    # Validate title matches item keywords (uses same logic as scraper)
                     import re as _re
                     item_name = msg.get("item_name", "")
-                    deal_title = msg.get("title", "").lower()
+                    deal_title = msg.get("title", "")
                     _item = db.execute(
                         select(SearchItem).where(SearchItem.name == item_name)
                     ).scalar_one_or_none()
                     title_valid = True
                     if _item and _item.keywords:
-                        title_valid = any(
-                            _re.search(r"(?<![a-z])" + _re.escape(kw.lower()) + r"(?![a-z])", deal_title)
-                            for kw in _item.keywords
-                        )
+                        tl = deal_title.lower()
+                        tn = _re.sub(r"([a-z])(\d)", r"\1 \2", tl)
+                        tn = _re.sub(r"(\d)([a-z])", r"\1 \2", tn)
+                        tn = _re.sub(r"[^a-z0-9]+", " ", tn).strip()
+                        traps = ["fullhd", "1920x1080", "1366x768", "lcd", "monitor", "tela", "notebook"]
+                        title_for_trap = tl.replace(" ", "")
+                        has_res = any(t in title_for_trap for t in traps)
+                        title_valid = False
+                        for kw in _item.keywords:
+                            kl = kw.lower().strip()
+                            kn = _re.sub(r"([a-z])(\d)", r"\1 \2", kl)
+                            kn = _re.sub(r"(\d)([a-z])", r"\1 \2", kn)
+                            kn = _re.sub(r"[^a-z0-9]+", " ", kn).strip()
+                            if not kn:
+                                continue
+                            if _re.search(r"\b" + _re.escape(kn) + r"\b", tn):
+                                if has_res and kn.strip() in ("1080", "1080p"):
+                                    continue
+                                title_valid = True
+                                break
                     if not title_valid:
                         logger.debug("Skipping junk deal: '%s' for %s", msg.get("title", "")[:50], item_name)
                         _add_scrape_log("filtered", item=item_name, title=msg.get("title", "")[:60], reason="keyword_mismatch")
