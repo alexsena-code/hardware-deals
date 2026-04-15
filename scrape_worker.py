@@ -50,7 +50,7 @@ def _setup_signals():
         signal.signal(signal.SIGINT, lambda *_: shutdown_event.set())
 
 
-CONCURRENCY = 3  # parallel scrape tasks
+CONCURRENCY = 3  # parallel scrape tasks (sequential within thread to avoid blocking event loop)
 
 
 async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths, olx_categories=None):
@@ -132,11 +132,11 @@ async def _execute_scrape(ws, msg):
     sem = asyncio.Semaphore(CONCURRENCY)
     ws_lock = asyncio.Lock()
 
-    counts = await asyncio.gather(*[
+    results = await asyncio.gather(*[
         _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths, olx_categories)
         for item_data in items_data
-    ])
-    total_deals = sum(counts)
+    ], return_exceptions=True)
+    total_deals = sum(r for r in results if isinstance(r, int))
 
     duration = round(time.monotonic() - t0, 1)
     log.info("Task %s done: %d deals in %.1fs", task_id, total_deals, duration)
@@ -155,7 +155,7 @@ async def _worker(ws_url: str):
     while not shutdown_event.is_set():
         try:
             log.info("Connecting to %s", ws_url)
-            async with websockets.connect(ws_url, ping_interval=30, ping_timeout=10) as ws:
+            async with websockets.connect(ws_url, ping_interval=30, ping_timeout=120) as ws:
                 backoff = BACKOFF_BASE
                 log.info("Connected. Sending hello.")
                 await ws.send(json.dumps({

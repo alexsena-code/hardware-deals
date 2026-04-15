@@ -88,6 +88,11 @@ def _parse_price(text: str) -> float | None:
         return None
 
 
+async def _fetch_page_async(url: str) -> str | None:
+    """Non-blocking wrapper — runs _fetch_page in a thread so the event loop stays free for WebSocket pings."""
+    return await asyncio.get_event_loop().run_in_executor(None, _fetch_page, url)
+
+
 def _fetch_page(url: str) -> str | None:
     """Fetch a page using curl_cffi with Chrome impersonation."""
     proxy = proxy_rotator.get_next()
@@ -286,7 +291,7 @@ async def scrape_olx(item: SearchItem, search_paths: list[str] | None = None) ->
             path_label = search_path or "geral"
             logger.info(f"OLX: searching '{keyword}' in {path_label} page 1")
 
-            html = _fetch_page(url)
+            html = await _fetch_page_async(url)
             if not html:
                 continue
 
@@ -303,7 +308,7 @@ async def scrape_olx(item: SearchItem, search_paths: list[str] | None = None) ->
                 url = _build_search_url(keyword, page, item.max_price, search_path)
                 logger.info(f"OLX: searching '{keyword}' in {path_label} page {page}")
 
-                html = _fetch_page(url)
+                html = await _fetch_page_async(url)
                 if not html:
                     break
 
