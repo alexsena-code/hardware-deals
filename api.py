@@ -660,6 +660,88 @@ async def test_proxies(db: Session = Depends(get_db)):
 
 # === WebSocket Scraper Worker ===
 
+import re as _re
+
+
+def _save_deals_batch(deals_list: list[dict]):
+    """Save a batch of deals to DB — runs in a thread to avoid blocking the event loop."""
+    db = SessionLocal()
+    try:
+        _items_cache: dict[str, SearchItem | None] = {}
+        ext_ids = [d.get("external_id", "") for d in deals_list]
+        banned_ids = set(
+            db.execute(
+                select(BannedDeal.external_id).where(BannedDeal.external_id.in_(ext_ids))
+            ).scalars().all()
+        ) if ext_ids else set()
+
+        saved = 0
+        for deal_msg in deals_list:
+            item_name = deal_msg.get("item_name", "")
+            deal_title = deal_msg.get("title", "")
+
+            if item_name not in _items_cache:
+                _items_cache[item_name] = db.execute(
+                    select(SearchItem).where(SearchItem.name == item_name)
+                ).scalar_one_or_none()
+            _item = _items_cache[item_name]
+
+            title_valid = True
+            if _item and _item.keywords:
+                tl = deal_title.lower()
+                tn = _re.sub(r"([a-z])(\d)", r"\1 \2", tl)
+                tn = _re.sub(r"(\d)([a-z])", r"\1 \2", tn)
+                tn = _re.sub(r"[^a-z0-9]+", " ", tn).strip()
+                traps = ["fullhd", "1920x1080", "1366x768", "lcd", "monitor", "tela", "notebook"]
+                title_for_trap = tl.replace(" ", "")
+                has_res = any(t in title_for_trap for t in traps)
+                title_valid = False
+                for kw in _item.keywords:
+                    kl = kw.lower().strip()
+                    kn = _re.sub(r"([a-z])(\d)", r"\1 \2", kl)
+                    kn = _re.sub(r"(\d)([a-z])", r"\1 \2", kn)
+                    kn = _re.sub(r"[^a-z0-9]+", " ", kn).strip()
+                    if not kn:
+                        continue
+                    if _re.search(r"\b" + _re.escape(kn) + r"\b", tn):
+                        if has_res and kn.strip() in ("1080", "1080p"):
+                            continue
+                        title_valid = True
+                        break
+            if not title_valid:
+                continue
+
+            if deal_msg.get("external_id", "") in banned_ids:
+                continue
+
+            stmt = pg_insert(Deal).values(
+                source=deal_msg.get("source", "olx"),
+                external_id=deal_msg["external_id"],
+                item_name=deal_msg["item_name"],
+                title=deal_msg["title"],
+                price=deal_msg["price"],
+                url=deal_msg["url"],
+                location=deal_msg.get("location"),
+                image_url=deal_msg.get("image_url"),
+                image_urls=deal_msg.get("image_urls", []),
+                description=deal_msg.get("description"),
+                category=deal_msg.get("category", "gpu"),
+                is_active=True,
+            ).on_conflict_do_update(
+                index_elements=["source", "external_id"],
+                set_={"price": deal_msg["price"], "title": deal_msg["title"], "is_active": True},
+            )
+            db.execute(stmt)
+            saved += 1
+
+        db.commit()
+        logger.info("Batch saved: %d/%d deals", saved, len(deals_list))
+    except Exception as e:
+        logger.error("Batch save error: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
 _worker_ws: WebSocket | None = None
 _worker_connected = False
 _scrape_logs: list[dict] = []  # Recent scrape activity log (max 200)
@@ -698,90 +780,9 @@ async def scraper_ws(ws: WebSocket):
                 pass
 
             elif msg_type in ("deal", "deals_batch"):
-                # Save deal(s) to DB (skip if banned or title doesn't match keywords)
-                import re as _re
+                # Process in background thread so WS event loop stays free for pings
                 deals_list = msg.get("deals", [msg]) if msg_type == "deals_batch" else [msg]
-                db = SessionLocal()
-                try:
-                    # Cache search items for keyword validation
-                    _items_cache: dict[str, SearchItem | None] = {}
-                    # Pre-load banned external_ids for this batch
-                    ext_ids = [d.get("external_id", "") for d in deals_list]
-                    banned_ids = set(
-                        db.execute(
-                            select(BannedDeal.external_id).where(
-                                BannedDeal.external_id.in_(ext_ids)
-                            )
-                        ).scalars().all()
-                    ) if ext_ids else set()
-
-                    saved = 0
-                    for deal_msg in deals_list:
-                        item_name = deal_msg.get("item_name", "")
-                        deal_title = deal_msg.get("title", "")
-
-                        # Get search item (cached)
-                        if item_name not in _items_cache:
-                            _items_cache[item_name] = db.execute(
-                                select(SearchItem).where(SearchItem.name == item_name)
-                            ).scalar_one_or_none()
-                        _item = _items_cache[item_name]
-
-                        # Validate title matches keywords
-                        title_valid = True
-                        if _item and _item.keywords:
-                            tl = deal_title.lower()
-                            tn = _re.sub(r"([a-z])(\d)", r"\1 \2", tl)
-                            tn = _re.sub(r"(\d)([a-z])", r"\1 \2", tn)
-                            tn = _re.sub(r"[^a-z0-9]+", " ", tn).strip()
-                            traps = ["fullhd", "1920x1080", "1366x768", "lcd", "monitor", "tela", "notebook"]
-                            title_for_trap = tl.replace(" ", "")
-                            has_res = any(t in title_for_trap for t in traps)
-                            title_valid = False
-                            for kw in _item.keywords:
-                                kl = kw.lower().strip()
-                                kn = _re.sub(r"([a-z])(\d)", r"\1 \2", kl)
-                                kn = _re.sub(r"(\d)([a-z])", r"\1 \2", kn)
-                                kn = _re.sub(r"[^a-z0-9]+", " ", kn).strip()
-                                if not kn:
-                                    continue
-                                if _re.search(r"\b" + _re.escape(kn) + r"\b", tn):
-                                    if has_res and kn.strip() in ("1080", "1080p"):
-                                        continue
-                                    title_valid = True
-                                    break
-                        if not title_valid:
-                            continue
-
-                        # Check blacklist
-                        if deal_msg.get("external_id", "") in banned_ids:
-                            continue
-
-                        stmt = pg_insert(Deal).values(
-                            source=deal_msg.get("source", "olx"),
-                            external_id=deal_msg["external_id"],
-                            item_name=deal_msg["item_name"],
-                            title=deal_msg["title"],
-                            price=deal_msg["price"],
-                            url=deal_msg["url"],
-                            location=deal_msg.get("location"),
-                            image_url=deal_msg.get("image_url"),
-                            image_urls=deal_msg.get("image_urls", []),
-                            description=deal_msg.get("description"),
-                            category=deal_msg.get("category", "gpu"),
-                            is_active=True,
-                        ).on_conflict_do_update(
-                            index_elements=["source", "external_id"],
-                            set_={"price": deal_msg["price"], "title": deal_msg["title"], "is_active": True},
-                        )
-                        db.execute(stmt)
-                        saved += 1
-
-                    db.commit()
-                    if msg_type == "deals_batch":
-                        logger.info("Batch saved: %d/%d deals", saved, len(deals_list))
-                finally:
-                    db.close()
+                asyncio.get_event_loop().run_in_executor(None, _save_deals_batch, deals_list)
 
             elif msg_type == "status":
                 logger.info("Worker status: %s — %s", msg.get("status"), msg.get("item", ""))
