@@ -68,7 +68,9 @@ def check_and_alert(deals_list: list[dict], items_cache: dict):
         if not item:
             continue
 
-        if price > 0 and price <= item.max_price:
+        # Only alert if deal is at least 40% below max price
+        threshold = item.max_price * 0.6
+        if price > 0 and price <= threshold:
             send_discord_alert(
                 item_name=item_name,
                 deal_title=deal.get("title", ""),

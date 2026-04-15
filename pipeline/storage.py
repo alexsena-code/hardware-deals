@@ -23,7 +23,8 @@ def _check_alerts_for_deals(db: Session, deals: list[ScrapedDeal], item_name: st
     if not item:
         return
     for deal in deals:
-        if deal.price > 0 and deal.price <= item.max_price:
+        threshold = item.max_price * 0.6
+        if deal.price > 0 and deal.price <= threshold:
             send_discord_alert(
                 item_name=item_name,
                 deal_title=deal.title,
