@@ -537,35 +537,36 @@ def get_manual_prices(db: Session = Depends(get_db)):
     ]
 
 
+class ManualPriceCreate(BaseModel):
+    item_name: str
+    price_new: float | None = None
+    price_aliexpress: float | None = None
+    price_reference: float | None = None
+    notes: str | None = None
+
+
 @app.post("/api/manual-prices")
-def set_manual_price(
-    item_name: str,
-    price_new: float | None = None,
-    price_aliexpress: float | None = None,
-    price_reference: float | None = None,
-    notes: str | None = None,
-    db: Session = Depends(get_db),
-):
+def set_manual_price(body: ManualPriceCreate, db: Session = Depends(get_db)):
     existing = db.execute(
-        select(ManualPrice).where(ManualPrice.item_name == item_name)
+        select(ManualPrice).where(ManualPrice.item_name == body.item_name)
     ).scalar_one_or_none()
 
     if existing:
-        if price_new is not None:
-            existing.price_new = price_new
-        if price_aliexpress is not None:
-            existing.price_aliexpress = price_aliexpress
-        if price_reference is not None:
-            existing.price_reference = price_reference
-        if notes is not None:
-            existing.notes = notes
+        if body.price_new is not None:
+            existing.price_new = body.price_new
+        if body.price_aliexpress is not None:
+            existing.price_aliexpress = body.price_aliexpress
+        if body.price_reference is not None:
+            existing.price_reference = body.price_reference
+        if body.notes is not None:
+            existing.notes = body.notes
     else:
         db.add(ManualPrice(
-            item_name=item_name,
-            price_new=price_new,
-            price_aliexpress=price_aliexpress,
-            price_reference=price_reference,
-            notes=notes,
+            item_name=body.item_name,
+            price_new=body.price_new,
+            price_aliexpress=body.price_aliexpress,
+            price_reference=body.price_reference,
+            notes=body.notes,
         ))
     db.commit()
     return {"status": "ok"}
