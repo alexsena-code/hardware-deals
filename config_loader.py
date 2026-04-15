@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     scrape_interval_minutes: int = 60
     api_host: str = "0.0.0.0"
     api_port: int = 8001
+    discord_webhook_url: str = ""
 
     class Config:
         env_file = ".env"

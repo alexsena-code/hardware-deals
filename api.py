@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta
 
@@ -665,6 +666,8 @@ import re as _re
 
 def _save_deals_batch(deals_list: list[dict]):
     """Save a batch of deals to DB — runs in a thread to avoid blocking the event loop."""
+    from pipeline.alerts import check_and_alert
+
     db = SessionLocal()
     try:
         _items_cache: dict[str, SearchItem | None] = {}
@@ -676,6 +679,7 @@ def _save_deals_batch(deals_list: list[dict]):
         ) if ext_ids else set()
 
         saved = 0
+        new_deals = []
         for deal_msg in deals_list:
             item_name = deal_msg.get("item_name", "")
             deal_title = deal_msg.get("title", "")
@@ -714,6 +718,15 @@ def _save_deals_batch(deals_list: list[dict]):
             if deal_msg.get("external_id", "") in banned_ids:
                 continue
 
+            # Check if deal already exists (to only alert on new deals)
+            existing = db.execute(
+                select(Deal.id).where(
+                    Deal.source == deal_msg.get("source", "olx"),
+                    Deal.external_id == deal_msg["external_id"],
+                )
+            ).scalar_one_or_none()
+            is_new = existing is None
+
             stmt = pg_insert(Deal).values(
                 source=deal_msg.get("source", "olx"),
                 external_id=deal_msg["external_id"],
@@ -734,8 +747,14 @@ def _save_deals_batch(deals_list: list[dict]):
             db.execute(stmt)
             saved += 1
 
+            if is_new:
+                new_deals.append(deal_msg)
+
         db.commit()
         logger.info("Batch saved: %d/%d deals", saved, len(deals_list))
+
+        # Send Discord alerts for new deals below max price
+        check_and_alert(new_deals, _items_cache)
     except Exception as e:
         logger.error("Batch save error: %s", e)
         db.rollback()
@@ -816,6 +835,42 @@ def worker_status():
 def get_scrape_logs(limit: int = Query(50, le=200)):
     """Recent scrape activity logs."""
     return _scrape_logs[-limit:]
+
+
+# === Discord Alerts ===
+
+@app.get("/api/discord-webhook")
+def get_discord_webhook():
+    from pipeline.alerts import DISCORD_WEBHOOK_URL
+    return {"configured": bool(DISCORD_WEBHOOK_URL), "url": DISCORD_WEBHOOK_URL[:20] + "..." if DISCORD_WEBHOOK_URL else ""}
+
+
+class WebhookUpdate(BaseModel):
+    url: str
+
+
+@app.post("/api/discord-webhook")
+def set_discord_webhook(body: WebhookUpdate):
+    import pipeline.alerts as alerts_module
+    alerts_module.DISCORD_WEBHOOK_URL = body.url
+    os.environ["DISCORD_WEBHOOK_URL"] = body.url
+    return {"status": "ok"}
+
+
+@app.post("/api/discord-webhook/test")
+def test_discord_webhook():
+    from pipeline.alerts import send_discord_alert, DISCORD_WEBHOOK_URL
+    if not DISCORD_WEBHOOK_URL:
+        return {"status": "error", "message": "Webhook URL not configured"}
+    send_discord_alert(
+        item_name="Teste",
+        deal_title="RTX 3060 12GB GDDR6 — Anúncio de teste",
+        price=900.0,
+        max_price=1500.0,
+        url="https://www.olx.com.br",
+        category="gpu",
+    )
+    return {"status": "ok", "message": "Test alert sent"}
 
 
 # === Scrape trigger ===

@@ -1,0 +1,15 @@
+[Unit]
+Description=Hardware Deals Scheduler (periodic scraping)
+After=network.target postgresql.service hardware-deals.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/hardware-deals
+ExecStart=/opt/hardware-deals/.venv/bin/python scheduler.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

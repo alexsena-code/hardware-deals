@@ -6,10 +6,32 @@ from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from models.deals import Deal, PriceHistory
+from models.deals import Deal, PriceHistory, SearchItem
 from sources.base import ScrapedDeal
 
 logger = logging.getLogger(__name__)
+
+
+def _check_alerts_for_deals(db: Session, deals: list[ScrapedDeal], item_name: str, category: str):
+    """Send Discord alerts for new deals below max price."""
+    from pipeline.alerts import send_discord_alert, DISCORD_WEBHOOK_URL
+    if not DISCORD_WEBHOOK_URL:
+        return
+    item = db.execute(
+        select(SearchItem).where(SearchItem.name == item_name)
+    ).scalar_one_or_none()
+    if not item:
+        return
+    for deal in deals:
+        if deal.price > 0 and deal.price <= item.max_price:
+            send_discord_alert(
+                item_name=item_name,
+                deal_title=deal.title,
+                price=deal.price,
+                max_price=item.max_price,
+                url=deal.url,
+                category=category,
+            )
 
 
 def upsert_deal(db: Session, deal: ScrapedDeal, item_name: str, category: str) -> bool:
@@ -47,10 +69,18 @@ def upsert_deal(db: Session, deal: ScrapedDeal, item_name: str, category: str) -
 
 def save_deals(db: Session, deals: list[ScrapedDeal], item_name: str, category: str) -> int:
     """Save multiple deals. Returns count of new/updated."""
+    new_deals = []
     count = 0
     for deal in deals:
         if upsert_deal(db, deal, item_name, category):
+            new_deals.append(deal)
             count += 1
+    # Alert on new deals below max price
+    if new_deals:
+        try:
+            _check_alerts_for_deals(db, new_deals, item_name, category)
+        except Exception as e:
+            logger.error("Alert check failed: %s", e)
     return count
 
 
