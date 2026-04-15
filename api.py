@@ -293,6 +293,7 @@ def get_deals(
     source: str | None = None,
     category: str | None = None,
     max_price: float | None = None,
+    hours: int | None = None,
     limit: int = Query(5000, le=10000),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -307,6 +308,9 @@ def get_deals(
         query = query.where(Deal.category == category)
     if max_price:
         query = query.where(Deal.price <= max_price)
+    if hours:
+        since = datetime.utcnow() - timedelta(hours=hours)
+        query = query.where(Deal.found_at >= since)
 
     query = query.order_by(Deal.price.asc()).offset(offset).limit(limit)
     deals = db.execute(query).scalars().all()
