@@ -249,6 +249,23 @@ def _matches_item(title: str, item: SearchItem) -> bool:
 
     if not matched:
         logger.debug(f"FILTERED OUT: '{title}' — no keyword match for {item.name} {item.keywords}")
+        return False
+
+    # Reject "complete PC" listings (e.g. "Computador i5 16gb ssd fonte gabinete")
+    # unless the item is a cpu-kit category (Xeon kits are commonly sold this way)
+    if item.category not in ("cpu-kit",):
+        pc_indicators = ["computador", "micro computador", "desktop completo", "pc completo", "pc gamer",
+                         "gabinete", "computador gamer"]
+        # Count how many different component types appear in the title
+        component_hints = ["memoria", "memória", "ssd", "hd ", "fonte", "gabinete",
+                           "windows", "formatado", "completo"]
+        pc_label_found = any(ind in title_lower for ind in pc_indicators)
+        component_count = sum(1 for hint in component_hints if hint in title_lower)
+        # If title looks like a full PC (has PC indicator + 2+ component types), reject
+        if pc_label_found and component_count >= 2:
+            logger.debug(f"FILTERED OUT (complete PC): '{title}' for {item.name}")
+            return False
+
     return matched
 
 
