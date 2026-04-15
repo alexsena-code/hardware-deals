@@ -256,6 +256,10 @@ def _matches_item(title: str, item: SearchItem) -> bool:
     if item.category not in ("cpu-kit",):
         pc_indicators = ["computador", "micro computador", "desktop completo", "pc completo", "pc gamer",
                          "gabinete", "computador gamer"]
+        # "CPU" followed by processor model = PC listing (e.g. "CPU core i5 7400 16gb ssd fonte")
+        cpu_as_pc = re.search(r"\bcpu\b.*\b(i[3579]|core|pentium|celeron|ryzen|xeon)\b", title_norm)
+        if cpu_as_pc:
+            pc_label_found = True
         # Count how many different component types appear in the title
         component_hints = ["memoria", "memória", "ssd", "hd ", "fonte", "gabinete",
                            "windows", "formatado", "completo"]
