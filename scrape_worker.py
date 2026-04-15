@@ -53,7 +53,7 @@ def _setup_signals():
 CONCURRENCY = 3  # parallel scrape tasks
 
 
-async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths):
+async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths, olx_categories=None):
     """Scrape a single item with concurrency limit."""
     async with sem:
         item = SearchItem(
@@ -64,6 +64,14 @@ async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths):
             specs=item_data.get("specs", {}),
         )
 
+        # Filter search paths by item category if olx_categories data is available
+        item_search_paths = search_paths
+        if olx_categories:
+            item_search_paths = [
+                c["path"] for c in olx_categories
+                if not c.get("allowed_item_categories") or item.category in c["allowed_item_categories"]
+            ] or search_paths
+
         async with ws_lock:
             await ws.send(json.dumps({
                 "type": "status", "id": task_id,
@@ -72,7 +80,7 @@ async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths):
 
         count = 0
         try:
-            deals = await scrape_olx(item, search_paths=search_paths)
+            deals = await scrape_olx(item, search_paths=item_search_paths)
             log.info("%s: %d deals found", item.name, len(deals))
 
             for deal in deals:
@@ -108,6 +116,7 @@ async def _execute_scrape(ws, msg):
     task_id = msg.get("id", "unknown")
     items_data = msg.get("items", [])
     search_paths = msg.get("search_paths")
+    olx_categories = msg.get("olx_categories")
 
     if not items_data:
         log.warning("No items to scrape")
@@ -124,7 +133,7 @@ async def _execute_scrape(ws, msg):
     ws_lock = asyncio.Lock()
 
     counts = await asyncio.gather(*[
-        _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths)
+        _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths, olx_categories)
         for item_data in items_data
     ])
     total_deals = sum(counts)

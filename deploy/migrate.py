@@ -50,4 +50,12 @@ if "deals" in existing:
             conn.execute(text("ALTER TABLE deals ADD COLUMN image_urls JSON DEFAULT '[]'::json"))
             print("Added image_urls to deals")
 
+# 6. Add allowed_item_categories JSON column to olx_categories
+if "olx_categories" in existing:
+    cols = {c["name"] for c in insp.get_columns("olx_categories")}
+    if "allowed_item_categories" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE olx_categories ADD COLUMN allowed_item_categories JSON DEFAULT '[]'::json"))
+            print("Added allowed_item_categories to olx_categories")
+
 print("Migration complete")

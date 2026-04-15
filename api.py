@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, Depends, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, text, inspect as sa_inspect
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+
+# Auto-migrate: add missing columns to existing tables
+_insp = sa_inspect(engine)
+if "olx_categories" in _insp.get_table_names():
+    _cols = {c["name"] for c in _insp.get_columns("olx_categories")}
+    if "allowed_item_categories" not in _cols:
+        with engine.begin() as _conn:
+            _conn.execute(text("ALTER TABLE olx_categories ADD COLUMN allowed_item_categories JSON DEFAULT '[]'"))
+            logger.info("Added allowed_item_categories column to olx_categories")
 
 app = FastAPI(title="Hardware Deals API", version="0.2.0")
 
@@ -87,7 +96,13 @@ def seed_olx_categories():
 def list_olx_categories(db: Session = Depends(get_db)):
     cats = db.execute(select(OlxCategory)).scalars().all()
     return [
-        {"id": c.id, "path": c.path, "label": c.label, "is_active": c.is_active}
+        {
+            "id": c.id,
+            "path": c.path,
+            "label": c.label,
+            "is_active": c.is_active,
+            "allowed_item_categories": c.allowed_item_categories or [],
+        }
         for c in cats
     ]
 
@@ -95,6 +110,7 @@ def list_olx_categories(db: Session = Depends(get_db)):
 class CategoryCreate(BaseModel):
     path: str
     label: str
+    allowed_item_categories: list[str] = []
 
 
 @app.post("/api/olx-categories")
@@ -105,8 +121,9 @@ def add_olx_category(body: CategoryCreate, db: Session = Depends(get_db)):
     if existing:
         existing.label = body.label
         existing.is_active = True
+        existing.allowed_item_categories = body.allowed_item_categories
     else:
-        db.add(OlxCategory(path=body.path, label=body.label))
+        db.add(OlxCategory(path=body.path, label=body.label, allowed_item_categories=body.allowed_item_categories))
     db.commit()
     return {"status": "ok"}
 
@@ -128,6 +145,20 @@ def toggle_olx_category(cat_id: int, db: Session = Depends(get_db)):
         db.commit()
         return {"status": "ok", "is_active": cat.is_active}
     return {"status": "error"}
+
+
+class CategoryUpdate(BaseModel):
+    allowed_item_categories: list[str]
+
+
+@app.patch("/api/olx-categories/{cat_id}")
+def update_olx_category(cat_id: int, body: CategoryUpdate, db: Session = Depends(get_db)):
+    cat = db.get(OlxCategory, cat_id)
+    if not cat:
+        return {"status": "error", "detail": "Category not found"}
+    cat.allowed_item_categories = body.allowed_item_categories
+    db.commit()
+    return {"status": "ok"}
 
 
 # === Items (from DB) ===
@@ -804,12 +835,17 @@ async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depend
 
     if _worker_connected and _worker_ws:
         task_id = str(uuid.uuid4())[:8]
-        # Send OLX categories from DB so worker uses them
+        # Send OLX categories from DB so worker uses them (with allowed_item_categories)
         from models.deals import OlxCategory
         olx_cats = db.execute(
-            select(OlxCategory.path).where(OlxCategory.is_active == True)
+            select(OlxCategory).where(OlxCategory.is_active == True)
         ).scalars().all()
-        search_paths = list(olx_cats) if olx_cats else ["/informatica", "/informatica/pecas-para-computador", ""]
+        olx_categories_data = [
+            {"path": c.path, "allowed_item_categories": c.allowed_item_categories or []}
+            for c in olx_cats
+        ] if olx_cats else [{"path": "/informatica", "allowed_item_categories": []}]
+        # Flat search_paths for backwards compat / log
+        search_paths = [c["path"] for c in olx_categories_data]
 
         _add_scrape_log("dispatched", task_id=task_id, items=len(items_data), categories=len(search_paths))
 
@@ -818,6 +854,7 @@ async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depend
             "id": task_id,
             "items": items_data,
             "search_paths": search_paths,
+            "olx_categories": olx_categories_data,
         }))
         return {"status": "dispatched", "worker": "websocket", "task_id": task_id, "items": len(items_data), "categories": search_paths}
     else:

@@ -39,6 +39,32 @@ def _get_search_paths() -> list[str]:
     return OLX_CFG.search_paths if OLX_CFG else ["/informatica"]
 
 
+def _get_search_paths_for_item(item_category: str) -> list[str]:
+    """Load active OLX categories filtered by item category.
+    If a category has allowed_item_categories set, only use it for matching items.
+    If allowed_item_categories is empty, it's a 'general' category used for all items.
+    """
+    try:
+        from models.database import SessionLocal
+        from models.deals import OlxCategory
+        from sqlalchemy import select
+        db = SessionLocal()
+        cats = db.execute(
+            select(OlxCategory).where(OlxCategory.is_active == True)
+        ).scalars().all()
+        db.close()
+        paths = []
+        for cat in cats:
+            allowed = cat.allowed_item_categories or []
+            if not allowed or item_category in allowed:
+                paths.append(cat.path)
+        if paths:
+            return paths
+    except Exception:
+        pass
+    return _get_search_paths()
+
+
 def _build_search_url(keyword: str, page: int = 1, max_price: int | None = None, path: str = "/informatica") -> str:
     url = f"{BASE_URL}{path}?q={quote_plus(keyword)}"
     if page > 1:
@@ -232,7 +258,7 @@ async def scrape_olx(item: SearchItem, search_paths: list[str] | None = None) ->
     seen_ids: set[str] = set()
 
     if search_paths is None:
-        search_paths = _get_search_paths()
+        search_paths = _get_search_paths_for_item(item.category)
     for search_path in search_paths:
         for keyword in item.keywords:
             url = _build_search_url(keyword, 1, item.max_price, search_path)

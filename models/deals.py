@@ -12,6 +12,7 @@ class OlxCategory(Base):
     path: Mapped[str] = mapped_column(String(200), unique=True)
     label: Mapped[str] = mapped_column(String(100))
     is_active: Mapped[bool] = mapped_column(default=True)
+    allowed_item_categories: Mapped[list | None] = mapped_column(JSON, default=list)
 
 
 class Proxy(Base):
