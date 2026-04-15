@@ -80,7 +80,10 @@ async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths, olx_c
 
         count = 0
         try:
-            deals = await scrape_olx(item, search_paths=item_search_paths)
+            # Run entire scrape in a thread so the event loop stays free for heartbeat/pings
+            deals = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: asyncio.run(scrape_olx(item, search_paths=item_search_paths))
+            )
             log.info("%s: %d deals found", item.name, len(deals))
 
             # Send deals in batches to avoid WebSocket timeout
@@ -157,6 +160,16 @@ async def _execute_scrape(ws, msg):
     }))
 
 
+async def _heartbeat(ws):
+    """Send periodic heartbeat to keep connection alive during long scrapes."""
+    try:
+        while True:
+            await asyncio.sleep(15)
+            await ws.send(json.dumps({"type": "pong"}))
+    except Exception:
+        pass
+
+
 async def _worker(ws_url: str):
     """Main worker loop with auto-reconnect."""
     backoff = BACKOFF_BASE
@@ -164,7 +177,7 @@ async def _worker(ws_url: str):
     while not shutdown_event.is_set():
         try:
             log.info("Connecting to %s", ws_url)
-            async with websockets.connect(ws_url, ping_interval=30, ping_timeout=120) as ws:
+            async with websockets.connect(ws_url, ping_interval=None, ping_timeout=None) as ws:
                 backoff = BACKOFF_BASE
                 log.info("Connected. Sending hello.")
                 await ws.send(json.dumps({
@@ -173,19 +186,25 @@ async def _worker(ws_url: str):
                     "platform": platform.platform(),
                 }))
 
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
+                # Start heartbeat in background
+                hb_task = asyncio.create_task(_heartbeat(ws))
 
-                    msg_type = msg.get("type")
-                    if msg_type == "ping":
-                        await ws.send(json.dumps({"type": "pong"}))
-                    elif msg_type == "scrape":
-                        await _execute_scrape(ws, msg)
-                    else:
-                        log.debug("Unknown message type: %s", msg_type)
+                try:
+                    async for raw in ws:
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+
+                        msg_type = msg.get("type")
+                        if msg_type == "ping":
+                            await ws.send(json.dumps({"type": "pong"}))
+                        elif msg_type == "scrape":
+                            await _execute_scrape(ws, msg)
+                        else:
+                            log.debug("Unknown message type: %s", msg_type)
+                finally:
+                    hb_task.cancel()
 
         except (websockets.ConnectionClosed, OSError) as e:
             if shutdown_event.is_set():
