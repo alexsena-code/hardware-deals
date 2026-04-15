@@ -83,24 +83,33 @@ async def _scrape_item(ws, ws_lock, sem, task_id, item_data, search_paths, olx_c
             deals = await scrape_olx(item, search_paths=item_search_paths)
             log.info("%s: %d deals found", item.name, len(deals))
 
-            for deal in deals:
+            # Send deals in batches to avoid WebSocket timeout
+            BATCH_SIZE = 50
+            deals_data = [
+                {
+                    "source": deal.source,
+                    "external_id": deal.external_id,
+                    "item_name": item.name,
+                    "title": deal.title,
+                    "price": deal.price,
+                    "url": deal.url,
+                    "location": deal.location,
+                    "image_url": deal.image_url,
+                    "image_urls": deal.image_urls or [],
+                    "description": deal.description,
+                    "category": item.category,
+                }
+                for deal in deals
+            ]
+            for i in range(0, len(deals_data), BATCH_SIZE):
+                batch = deals_data[i:i + BATCH_SIZE]
                 async with ws_lock:
                     await ws.send(json.dumps({
-                        "type": "deal",
+                        "type": "deals_batch",
                         "id": task_id,
-                        "source": deal.source,
-                        "external_id": deal.external_id,
-                        "item_name": item.name,
-                        "title": deal.title,
-                        "price": deal.price,
-                        "url": deal.url,
-                        "location": deal.location,
-                        "image_url": deal.image_url,
-                        "image_urls": deal.image_urls or [],
-                        "description": deal.description,
-                        "category": item.category,
+                        "deals": batch,
                     }))
-                count += 1
+                count += len(batch)
         except Exception as e:
             log.error("Scrape failed for %s: %s", item.name, e)
             async with ws_lock:

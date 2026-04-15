@@ -697,74 +697,89 @@ async def scraper_ws(ws: WebSocket):
             elif msg_type == "pong":
                 pass
 
-            elif msg_type == "deal":
-                # Save deal to DB (skip if banned or title doesn't match keywords)
+            elif msg_type in ("deal", "deals_batch"):
+                # Save deal(s) to DB (skip if banned or title doesn't match keywords)
+                import re as _re
+                deals_list = msg.get("deals", [msg]) if msg_type == "deals_batch" else [msg]
                 db = SessionLocal()
                 try:
-                    # Validate title matches item keywords (uses same logic as scraper)
-                    import re as _re
-                    item_name = msg.get("item_name", "")
-                    deal_title = msg.get("title", "")
-                    _item = db.execute(
-                        select(SearchItem).where(SearchItem.name == item_name)
-                    ).scalar_one_or_none()
-                    title_valid = True
-                    if _item and _item.keywords:
-                        tl = deal_title.lower()
-                        tn = _re.sub(r"([a-z])(\d)", r"\1 \2", tl)
-                        tn = _re.sub(r"(\d)([a-z])", r"\1 \2", tn)
-                        tn = _re.sub(r"[^a-z0-9]+", " ", tn).strip()
-                        traps = ["fullhd", "1920x1080", "1366x768", "lcd", "monitor", "tela", "notebook"]
-                        title_for_trap = tl.replace(" ", "")
-                        has_res = any(t in title_for_trap for t in traps)
-                        title_valid = False
-                        for kw in _item.keywords:
-                            kl = kw.lower().strip()
-                            kn = _re.sub(r"([a-z])(\d)", r"\1 \2", kl)
-                            kn = _re.sub(r"(\d)([a-z])", r"\1 \2", kn)
-                            kn = _re.sub(r"[^a-z0-9]+", " ", kn).strip()
-                            if not kn:
-                                continue
-                            if _re.search(r"\b" + _re.escape(kn) + r"\b", tn):
-                                if has_res and kn.strip() in ("1080", "1080p"):
-                                    continue
-                                title_valid = True
-                                break
-                    if not title_valid:
-                        logger.debug("Skipping junk deal: '%s' for %s", msg.get("title", "")[:50], item_name)
-                        _add_scrape_log("filtered", item=item_name, title=msg.get("title", "")[:60], reason="keyword_mismatch")
-                        db.close()
-                        continue
+                    # Cache search items for keyword validation
+                    _items_cache: dict[str, SearchItem | None] = {}
+                    # Pre-load banned external_ids for this batch
+                    ext_ids = [d.get("external_id", "") for d in deals_list]
+                    banned_ids = set(
+                        db.execute(
+                            select(BannedDeal.external_id).where(
+                                BannedDeal.external_id.in_(ext_ids)
+                            )
+                        ).scalars().all()
+                    ) if ext_ids else set()
 
-                    # Check blacklist
-                    banned = db.execute(
-                        select(BannedDeal).where(
-                            BannedDeal.source == msg.get("source", "olx"),
-                            BannedDeal.external_id == msg["external_id"],
-                        )
-                    ).scalar_one_or_none()
-                    if banned:
-                        logger.debug("Skipping banned deal: %s", msg["external_id"])
-                    else:
+                    saved = 0
+                    for deal_msg in deals_list:
+                        item_name = deal_msg.get("item_name", "")
+                        deal_title = deal_msg.get("title", "")
+
+                        # Get search item (cached)
+                        if item_name not in _items_cache:
+                            _items_cache[item_name] = db.execute(
+                                select(SearchItem).where(SearchItem.name == item_name)
+                            ).scalar_one_or_none()
+                        _item = _items_cache[item_name]
+
+                        # Validate title matches keywords
+                        title_valid = True
+                        if _item and _item.keywords:
+                            tl = deal_title.lower()
+                            tn = _re.sub(r"([a-z])(\d)", r"\1 \2", tl)
+                            tn = _re.sub(r"(\d)([a-z])", r"\1 \2", tn)
+                            tn = _re.sub(r"[^a-z0-9]+", " ", tn).strip()
+                            traps = ["fullhd", "1920x1080", "1366x768", "lcd", "monitor", "tela", "notebook"]
+                            title_for_trap = tl.replace(" ", "")
+                            has_res = any(t in title_for_trap for t in traps)
+                            title_valid = False
+                            for kw in _item.keywords:
+                                kl = kw.lower().strip()
+                                kn = _re.sub(r"([a-z])(\d)", r"\1 \2", kl)
+                                kn = _re.sub(r"(\d)([a-z])", r"\1 \2", kn)
+                                kn = _re.sub(r"[^a-z0-9]+", " ", kn).strip()
+                                if not kn:
+                                    continue
+                                if _re.search(r"\b" + _re.escape(kn) + r"\b", tn):
+                                    if has_res and kn.strip() in ("1080", "1080p"):
+                                        continue
+                                    title_valid = True
+                                    break
+                        if not title_valid:
+                            continue
+
+                        # Check blacklist
+                        if deal_msg.get("external_id", "") in banned_ids:
+                            continue
+
                         stmt = pg_insert(Deal).values(
-                            source=msg.get("source", "olx"),
-                            external_id=msg["external_id"],
-                            item_name=msg["item_name"],
-                            title=msg["title"],
-                            price=msg["price"],
-                            url=msg["url"],
-                            location=msg.get("location"),
-                            image_url=msg.get("image_url"),
-                            image_urls=msg.get("image_urls", []),
-                            description=msg.get("description"),
-                            category=msg.get("category", "gpu"),
+                            source=deal_msg.get("source", "olx"),
+                            external_id=deal_msg["external_id"],
+                            item_name=deal_msg["item_name"],
+                            title=deal_msg["title"],
+                            price=deal_msg["price"],
+                            url=deal_msg["url"],
+                            location=deal_msg.get("location"),
+                            image_url=deal_msg.get("image_url"),
+                            image_urls=deal_msg.get("image_urls", []),
+                            description=deal_msg.get("description"),
+                            category=deal_msg.get("category", "gpu"),
                             is_active=True,
                         ).on_conflict_do_update(
                             index_elements=["source", "external_id"],
-                            set_={"price": msg["price"], "title": msg["title"], "is_active": True},
+                            set_={"price": deal_msg["price"], "title": deal_msg["title"], "is_active": True},
                         )
                         db.execute(stmt)
+                        saved += 1
+
                     db.commit()
+                    if msg_type == "deals_batch":
+                        logger.info("Batch saved: %d/%d deals", saved, len(deals_list))
                 finally:
                     db.close()
 
