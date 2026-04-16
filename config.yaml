@@ -164,7 +164,7 @@ sources:
   olx:
     enabled: true
     rate_limit_seconds: 2.0
-    max_pages: 50
+    max_pages: 10
     # Search in multiple OLX categories to find misplaced deals
     search_paths:
       - "/informatica"           # Principal - placas de video, RAM, etc

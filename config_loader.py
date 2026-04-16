@@ -7,7 +7,7 @@ from pydantic import BaseModel
 class Settings(BaseSettings):
     database_url: str = "postgresql://hardware:hardware123@localhost:5433/hardware_deals"
     proxy_list: str = ""
-    scrape_interval_minutes: int = 60
+    scrape_interval_minutes: int = 360
     api_host: str = "0.0.0.0"
     api_port: int = 8001
     discord_webhook_url: str = ""
