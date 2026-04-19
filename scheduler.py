@@ -35,6 +35,9 @@ async def main():
         "interval",
         minutes=settings.scrape_interval_minutes,
         id="scrape_cycle",
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=300,
     )
     scheduler.start()
     logger.info("Scheduler started — triggering scrape every %d minutes via API", settings.scrape_interval_minutes)
