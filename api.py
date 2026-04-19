@@ -1386,12 +1386,12 @@ async def price_comparison(db: Session = Depends(get_db)):
     for item in items:
         olx = olx_map.get(item.name, {})
         new = manual_map.get(item.name, {})
-        olx_min = olx.get("olx_min")
+        olx_avg = olx.get("olx_avg")
         price_new = new.get("price_new")
 
         savings_pct = None
-        if olx_min and price_new and price_new > 0:
-            savings_pct = round((1 - olx_min / price_new) * 100, 1)
+        if olx_avg and price_new and price_new > 0:
+            savings_pct = round((1 - olx_avg / price_new) * 100, 1)
 
         result.append({
             "item_name": item.name,
