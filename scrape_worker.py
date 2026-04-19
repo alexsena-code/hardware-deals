@@ -39,6 +39,7 @@ log = logging.getLogger("scrape-worker")
 BACKOFF_BASE = 5
 BACKOFF_MAX = 60
 shutdown_event = asyncio.Event()
+_scrape_in_progress = False
 
 
 def _setup_signals():
@@ -200,7 +201,20 @@ async def _worker(ws_url: str):
                         if msg_type == "ping":
                             await ws.send(json.dumps({"type": "pong"}))
                         elif msg_type == "scrape":
-                            await _execute_scrape(ws, msg)
+                            global _scrape_in_progress
+                            if _scrape_in_progress:
+                                task_id = msg.get("id", "unknown")
+                                log.warning("Task %s ignored: scrape already in progress", task_id)
+                                await ws.send(json.dumps({
+                                    "type": "result", "id": task_id,
+                                    "status": "skipped", "reason": "busy",
+                                }))
+                                continue
+                            _scrape_in_progress = True
+                            try:
+                                await _execute_scrape(ws, msg)
+                            finally:
+                                _scrape_in_progress = False
                         else:
                             log.debug("Unknown message type: %s", msg_type)
                 finally:
