@@ -278,15 +278,37 @@ def _matches_item(title: str, item: SearchItem) -> bool:
     return matched
 
 
+def _dedupe_keywords(keywords: list[str]) -> list[str]:
+    """Collapse keywords that only differ by case or whitespace.
+    'rtx 3060', 'RTX 3060', 'rtx3060' all normalize to the same token → one request.
+    Different specificity ('rtx 3060' vs '3060') stays separate.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for kw in keywords:
+        norm = re.sub(r"\s+", "", kw.lower().strip())
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(kw)
+    return out
+
+
 async def scrape_olx(item: SearchItem, search_paths: list[str] | None = None) -> list[ScrapedDeal]:
     """Scrape OLX for a specific item across all keywords and categories."""
     all_deals: list[ScrapedDeal] = []
     seen_ids: set[str] = set()
 
+    keywords = _dedupe_keywords(item.keywords)
+    if len(keywords) < len(item.keywords):
+        logger.info(
+            f"OLX: {item.name} — deduped keywords {len(item.keywords)} → {len(keywords)}"
+        )
+
     if search_paths is None:
         search_paths = _get_search_paths_for_item(item.category)
     for search_path in search_paths:
-        for keyword in item.keywords:
+        for keyword in keywords:
             url = _build_search_url(keyword, 1, item.max_price, search_path)
             path_label = search_path or "geral"
             logger.info(f"OLX: searching '{keyword}' in {path_label} page 1")
