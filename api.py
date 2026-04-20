@@ -5,6 +5,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, Depends, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -769,6 +770,27 @@ _worker_ws: WebSocket | None = None
 _worker_connected = False
 _scrape_logs: list[dict] = []  # Recent scrape activity log (max 200)
 
+# Full-scrape cooldown (single-item scrapes bypass)
+SCRAPE_COOLDOWN_HOURS = 6
+_LAST_SCRAPE_FILE = Path(__file__).parent / ".last_scrape_at"
+
+
+def _load_last_scrape_at() -> datetime | None:
+    try:
+        return datetime.fromisoformat(_LAST_SCRAPE_FILE.read_text().strip())
+    except Exception:
+        return None
+
+
+def _save_last_scrape_at(dt: datetime) -> None:
+    try:
+        _LAST_SCRAPE_FILE.write_text(dt.isoformat())
+    except Exception as e:
+        logger.error("Failed to persist last scrape timestamp: %s", e)
+
+
+_last_scrape_at: datetime | None = _load_last_scrape_at()
+
 
 def _add_scrape_log(event: str, **kwargs):
     entry = {"event": event, "time": datetime.utcnow().isoformat()[:19], **kwargs}
@@ -885,8 +907,21 @@ class ScrapeRequest(BaseModel):
 
 @app.post("/api/scrape")
 async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depends(get_db)):
-    """Trigger scrape — all items or a single item by ID."""
+    """Trigger scrape — all items or a single item by ID. Full scrapes are rate-limited to once per 6h."""
+    global _last_scrape_at
     item_id = body.item_id if body else None
+
+    if not item_id and _last_scrape_at:
+        elapsed = datetime.utcnow() - _last_scrape_at
+        cooldown = timedelta(hours=SCRAPE_COOLDOWN_HOURS)
+        if elapsed < cooldown:
+            remaining_s = int((cooldown - elapsed).total_seconds())
+            return {
+                "status": "skipped",
+                "reason": "cooldown",
+                "last_scrape_at": _last_scrape_at.isoformat(),
+                "next_allowed_in_minutes": remaining_s // 60,
+            }
 
     if item_id:
         item = db.get(SearchItem, item_id)
@@ -932,9 +967,15 @@ async def trigger_scrape(body: ScrapeRequest | None = None, db: Session = Depend
             "search_paths": search_paths,
             "olx_categories": olx_categories_data,
         }))
+        if not item_id:
+            _last_scrape_at = datetime.utcnow()
+            _save_last_scrape_at(_last_scrape_at)
         return {"status": "dispatched", "worker": "websocket", "task_id": task_id, "items": len(items_data), "categories": search_paths}
     else:
         await run_scrape()
+        if not item_id:
+            _last_scrape_at = datetime.utcnow()
+            _save_last_scrape_at(_last_scrape_at)
         return {"status": "completed", "worker": "local"}
 
 
