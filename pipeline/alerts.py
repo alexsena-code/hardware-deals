@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL") or settings.discord_webhook_url or ""
 
-ALERT_DISCOUNT_THRESHOLD = 0.6  # Alert if price <= max_price * 0.6 (i.e. 40% discount)
+ALERT_DISCOUNT_THRESHOLD = 0.5  # Alert if price <= max_price * 0.5 (i.e. 50% discount)
 
 
 def send_discord_alert(item_name: str, deal_title: str, price: float, max_price: float, url: str, category: str):
@@ -59,7 +59,7 @@ def send_discord_alert(item_name: str, deal_title: str, price: float, max_price:
 
 
 def check_and_alert(deals_list: list[dict], items_cache: dict):
-    """Check a batch of deals and send alerts for those at least 40% below max price.
+    """Check a batch of deals and send alerts for those at least 50% below max price.
     items_cache: dict of item_name -> SearchItem (DB model with max_price).
     """
     if not DISCORD_WEBHOOK_URL:

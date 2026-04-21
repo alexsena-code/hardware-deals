@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _check_alerts_for_deals(db: Session, deals: list[ScrapedDeal], item_name: str, category: str):
-    """Send Discord alerts for new deals at least 40% below max price."""
+    """Send Discord alerts for new deals at least 50% below max price."""
     from pipeline.alerts import send_discord_alert, DISCORD_WEBHOOK_URL, ALERT_DISCOUNT_THRESHOLD
     if not DISCORD_WEBHOOK_URL:
         return
